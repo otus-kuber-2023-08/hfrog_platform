@@ -19,8 +19,8 @@ jobs:
       uses: actions/checkout@v2
       with:
         repository: "express42/otus-platform-tests"
-        ref: 2023-08
+        ref: 2022-06
         path: "./otus-platform-tests/"
 
     - name: Run tests
-      run: curl https://raw.githubusercontent.com/express42/otus-platform-tests/2023-08/run.sh | bash
+      run: curl https://raw.githubusercontent.com/express42/otus-platform-tests/2022-06/run.sh | bash
