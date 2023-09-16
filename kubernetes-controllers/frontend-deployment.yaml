@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: server
+        image: hfrog/hipster-frontend:v0.0.1
+        env:
+        - name: AD_SERVICE_ADDR
+          value: "ad"
+        - name: CART_SERVICE_ADDR
+          value: "cart"
+        - name: CHECKOUT_SERVICE_ADDR
+          value: "checkout"
+        - name: CURRENCY_SERVICE_ADDR
+          value: "currency"
+        - name: PRODUCT_CATALOG_SERVICE_ADDR
+          value: "product-catalog"
+        - name: RECOMMENDATION_SERVICE_ADDR
+          value: "recommendation"
+        - name: SHIPPING_SERVICE_ADDR
+          value: "shipping"
+        readinessProbe:
+          initialDelaySeconds: 10
+          httpGet:
+            path: "/_healthz2"
+            port: 8080
+            httpHeaders:
+            - name: "Cookie"
+              value: "shop_session-id=x-readiness-probe"
