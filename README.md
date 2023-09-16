@@ -77,6 +77,7 @@ web        1/1     Running   0          56m
 
  - [*] Основное ДЗ
  - [*] Задание со *
+ - [*] Задание с **
 
 ## В процессе сделано:
  - на macbook установлен kind ```brew install kind```, создан файл kind-config.yaml и запущен кластер ```kind create cluster --config kind-config.yaml```:
@@ -460,6 +461,7 @@ go_gc_duration_seconds_count 3
 # HELP go_goroutines Number of goroutines that currently exist.
 ```
 
+## Задание с **
  - манифест изменён так, чтобы поды запускались и на мастер-узлах, проверка:
 ```$ kubectl apply -f node-exporter-daemonset.yaml
 daemonset.apps/node-exporter configured
