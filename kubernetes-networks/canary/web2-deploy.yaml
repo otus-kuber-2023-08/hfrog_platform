@@ -1,0 +1,45 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web2
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: web2
+    spec:
+      containers:
+      - name: web
+        image: hfrog/app:2
+        livenessProbe:
+          tcpSocket:
+            port: 8000
+        readinessProbe:
+          httpGet:
+            path: /index.html
+            port: 8000
+        volumeMounts:
+        - name: app
+          mountPath: /app
+          readOnly: true
+      initContainers:
+      - name: init
+        image: busybox:1.31.0
+        command: ['sh', '-xc', 'echo new version > /app/index.html']
+        volumeMounts:
+        - name: app
+          mountPath: /app
+          readOnly: false
+      volumes:
+      - name: app
+        emptyDir: {}
