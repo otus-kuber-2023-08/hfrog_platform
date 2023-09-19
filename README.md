@@ -1309,7 +1309,7 @@ Added `k8s-minio-dev` successfully.
 mcli: <ERROR> Unable to get service status: invalid character '<' looking for beginning of value.
 ```
 Вероятно, ошибка вызвана несоответствием версий сервера и клиента. Сервер довольно старый.
-Попробуем использовать образ `bitnami/minio:latest`, это потребует небольших правок в запуске minio, см. `minio-statefulset-new.yaml`
+Попробуем использовать образ `bitnami/minio:latest`, это потребовало удалить args, в остальном файл такой же:
 ```
 $ kubectl apply -f minio-statefulset-new.yaml
 statefulset.apps/minio configured
