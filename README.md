@@ -1191,3 +1191,206 @@ $ curl -s -H 'Web-Version: xxx' http://172.17.255.3/web/index.html | head -5
 $ curl -s -H 'Web-Version: always' http://172.17.255.3/web/index.html | head -5
 new version
 ```
+
+# Выполнено ДЗ №4
+
+ - [*] Основное ДЗ
+ - [*] Задание со *
+
+## В процессе сделано:
+
+ - создан кластер kubernetes командой `kind create cluster`
+ - скачан, записан в `minio-statefulset.yaml` и применён манифест для StatefulSet minio:
+```
+$ kubectl get all
+NAME          READY   STATUS    RESTARTS   AGE
+pod/minio-0   1/1     Running   0          53m
+
+NAME                 TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+service/kubernetes   ClusterIP   10.96.0.1    <none>        443/TCP   56m
+
+NAME                     READY   AGE
+statefulset.apps/minio   1/1     53m
+$ kubectl get pv -o wide
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                  STORAGECLASS   REASON   AGE   VOLUMEMODE
+pvc-abd30d13-16fe-49b4-bebb-8a2e39e28b64   10Gi       RWO            Delete           Bound    default/data-minio-0   standard                54m   Filesystem
+$ kubectl get pvc -o wide
+NAME           STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE   VOLUMEMODE
+data-minio-0   Bound    pvc-abd30d13-16fe-49b4-bebb-8a2e39e28b64   10Gi       RWO            standard       54m   Filesystem
+$ kubectl logs minio-0
+
+ You are running an older version of MinIO released 4 years ago
+ Update: https://docs.min.io/docs/deploy-minio-on-kubernetes
+
+
+Endpoint:  http://10.244.0.7:9000  http://127.0.0.1:9000
+
+Browser Access:
+   http://10.244.0.7:9000  http://127.0.0.1:9000
+
+Object API (Amazon S3 compatible):
+   Go:         https://docs.min.io/docs/golang-client-quickstart-guide
+   Java:       https://docs.min.io/docs/java-client-quickstart-guide
+   Python:     https://docs.min.io/docs/python-client-quickstart-guide
+   JavaScript: https://docs.min.io/docs/javascript-client-quickstart-guide
+   .NET:       https://docs.min.io/docs/dotnet-client-quickstart-guide
+$ kubectl get pv -o json | jq -r '.items[]|[.metadata.name,.spec.storageClassName]|join(" ")'
+pvc-abd30d13-16fe-49b4-bebb-8a2e39e28b64 standard
+$ kubectl get pvc -o json | jq -r '.items[]|[.metadata.name,.spec.storageClassName]|join(" ")'
+data-minio-0 standard
+```
+Видим, что создан StatefulSet minio, PersistentVolume pvc-abd30d13-16fe-49b4-bebb-8a2e39e28b64 и PersistentVolumeClaim data-minio-0.
+storageClassName одинаковый, `standard`
+
+ - проверим, что данные в PersistentVolume сохраняются после рестарта пода:
+```
+$ kubectl exec -it minio-0 -- sh
+/ # df -h
+Filesystem                Size      Used Available Use% Mounted on
+overlay                  58.4G      8.6G     46.8G  16% /
+tmpfs                    64.0M         0     64.0M   0% /dev
+/dev/vda1                58.4G      8.6G     46.8G  16% /data
+/dev/vda1                58.4G      8.6G     46.8G  16% /etc/hosts
+/dev/vda1                58.4G      8.6G     46.8G  16% /dev/termination-log
+/dev/vda1                58.4G      8.6G     46.8G  16% /etc/hostname
+/dev/vda1                58.4G      8.6G     46.8G  16% /etc/resolv.conf
+shm                      64.0M         0     64.0M   0% /dev/shm
+tmpfs                     3.8G     12.0K      3.8G   0% /run/secrets/kubernetes.io/serviceaccount
+overlay                  58.4G      8.6G     46.8G  16% /sys/devices/virtual/dmi/id/product_name
+overlay                  58.4G      8.6G     46.8G  16% /sys/devices/virtual/dmi/id/product_uuid
+overlay                  58.4G      8.6G     46.8G  16% /sys/devices/virtual/dmi/id/product_uuid
+tmpfs                     1.9G         0      1.9G   0% /proc/acpi
+tmpfs                    64.0M         0     64.0M   0% /proc/kcore
+tmpfs                    64.0M         0     64.0M   0% /proc/keys
+tmpfs                    64.0M         0     64.0M   0% /proc/timer_list
+tmpfs                     1.9G         0      1.9G   0% /sys/firmware
+/ # ls -l /data
+total 0
+/ # echo test > /data/test
+$ kubectl delete pod minio-0
+pod "minio-0" deleted
+$ kubectl get pods
+NAME      READY   STATUS    RESTARTS   AGE
+minio-0   1/1     Running   0          1s
+$ kubectl exec -it minio-0 -- sh
+/ # ls -l /data
+total 4
+-rw-r--r--    1 root     root             5 Sep 19 20:05 test
+/ # cat /data/test
+test
+```
+Видно, что файл `test` сохранился после перезапуска пода
+
+ - скачан и применён файл `minio-headless-service.yaml` с манифестом сервиса minio
+ - скачаем и установим minio client `mcli`:
+```
+$ kubectl exec -it minio-0 -- sh
+/ # cat /etc/os-release
+NAME="Alpine Linux"
+ID=alpine
+VERSION_ID=3.9.4
+PRETTY_NAME="Alpine Linux v3.9"
+HOME_URL="https://alpinelinux.org/"
+BUG_REPORT_URL="https://bugs.alpinelinux.org/"
+/ # wget http://dl-cdn.alpinelinux.org/alpine/v3.18/community/x86_64/minio-client-0.20230323.200304-r4.apk
+Connecting to dl-cdn.alpinelinux.org (151.101.86.132:80)
+minio-client-0.20230 100% |**************************************************************************************************************************************************************************************| 9616k  0:00:00 ETA
+/ # apk add --allow-untrusted minio-client-0.20230323.200304-r4.apk
+(1/1) Installing minio-client (0.20230323.200304-r4)
+Executing busybox-1.29.3-r10.trigger
+OK: 35 MiB in 21 packages
+/ # mcli alias set k8s-minio-dev http://127.0.0.1:9000 minio minio123
+Added `k8s-minio-dev` successfully.
+/ # mcli ping k8s-minio-dev
+  1: http://127.0.0.1:9000:9000   min=1.54ms     max=1.54ms     average=1.54ms     errors=0   roundtrip=1.54ms
+  2: http://127.0.0.1:9000:9000   min=1.23ms     max=1.54ms     average=1.38ms     errors=0   roundtrip=1.23ms
+  3: http://127.0.0.1:9000:9000   min=1.00ms     max=1.54ms     average=1.26ms     errors=0   roundtrip=1.00ms
+/ # mcli admin info k8s-minio-dev
+mcli: <ERROR> Unable to get service status: invalid character '<' looking for beginning of value.
+```
+Вероятно, ошибка вызвана несоответствием версий сервера и клиента. Сервер довольно старый.
+Попробуем использовать образ `bitnami/minio:latest`, это потребовало удалить args, в остальном файл такой же:
+```
+$ kubectl apply -f minio-statefulset-new.yaml
+statefulset.apps/minio configured
+$ kubectl exec -it minio-0 -- sh
+$ bash
+I have no name!@minio-0:/opt/bitnami/minio-client$ mc admin info local
+●  localhost:9000
+   Uptime: 10 minutes
+   Version: 2023-09-16T01:01:47Z
+   Network: 1/1 OK
+   Drives: 1/1 OK
+   Pool: 1
+
+Pools:
+   1st, Erasure sets: 1, Drives per erasure set: 1
+
+1 drive online, 0 drives offline
+I have no name!@minio-0:/opt/bitnami/minio-client$ mc ping local
+  1: http://localhost:9000:9000   min=1.01ms     max=1.01ms     average=1.01ms     errors=0   roundtrip=1.01ms
+  2: http://localhost:9000:9000   min=0.80ms     max=1.01ms     average=0.90ms     errors=0   roundtrip=0.80ms
+  3: http://localhost:9000:9000   min=0.49ms     max=1.01ms     average=0.77ms     errors=0   roundtrip=0.49ms
+^CI have no name!@minio-0:/opt/bitnami/minio-client$
+```
+Так работает. Можно открыть доступ к web-консоли командой `kubectl port-forward pod/minio-0 9001:9001`, создать учётку и зайти туда:
+```
+^CI have no name!@minio-0:/opt/bitnami/minio-client$ mc admin user add local miniouser password
+Added user `miniouser` successfully.
+```
+
+## Задание со *
+
+ - создадим файл с секретом и применим его:
+```
+$ echo -n minio | base64
+bWluaW8=
+$ echo -n minio123 | base64
+bWluaW8xMjM=
+$ cat minio-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-admin-credentials
+data:
+  access-key: bWluaW8=
+  secret-key: bWluaW8xMjM=
+$ kubectl apply -f minio-secret.yaml
+secret/minio-admin-credentials created
+```
+
+ - используем секрет для задания значений переменных среды, используя следующую конструкцию, запишем в файл `minio-statefulset.yaml`:
+```
+        - name: MINIO_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: minio-admin-credentials
+              key: access-key
+        - name: MINIO_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: minio-admin-credentials
+              key: secret-key
+
+```
+
+ - применим манифест и проверим доступ:
+```
+$ kubectl apply -f minio-statefulset.yaml
+statefulset.apps/minio configured
+$ kubectl get pods
+NAME      READY   STATUS    RESTARTS   AGE
+minio-0   1/1     Running   0          4s
+$ kubectl exec -it minio-0 -- sh
+...
+[снова установим minio client]
+...
+/ # mcli alias set k8s-minio-dev http://127.0.0.1:9000 minio minio123
+mcli: Configuration written to `/root/.mcli/config.json`. Please update your access credentials.
+mcli: Successfully created `/root/.mcli/share`.
+mcli: Initialized share uploads `/root/.mcli/share/uploads.json` file.
+mcli: Initialized share downloads `/root/.mcli/share/downloads.json` file.
+Added `k8s-minio-dev` successfully.
+/ # mcli alias set k8s-minio-dev http://127.0.0.1:9000 minio minio123aa
+mcli: <ERROR> Unable to initialize new alias from the provided credentials. The request signature we calculated does not match the signature you provided. Check your key and signing method.
+```
