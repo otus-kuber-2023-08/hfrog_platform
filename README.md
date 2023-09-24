@@ -1426,7 +1426,7 @@ dave      0         11m
 default   0         6d21h
 ```
 
- - проверим, что у `bob` есть доступ к кластеру, непример на просмотр подов в namespace `kube-system`, а у `dave` - нет:
+ - проверим, что у `bob` есть доступ к кластеру, например на просмотр подов в namespace `kube-system`, а у `dave` - нет:
 ```
 $ kubectl --as=system:serviceaccount:default:bob get pods -n kube-system
 NAME                               READY   STATUS    RESTARTS   AGE
