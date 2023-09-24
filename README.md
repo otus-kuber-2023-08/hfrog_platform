@@ -1394,3 +1394,212 @@ Added `k8s-minio-dev` successfully.
 / # mcli alias set k8s-minio-dev http://127.0.0.1:9000 minio minio123aa
 mcli: <ERROR> Unable to initialize new alias from the provided credentials. The request signature we calculated does not match the signature you provided. Check your key and signing method.
 ```
+
+# Выполнено ДЗ №5
+
+ - [*] Основное ДЗ
+
+## В процессе сделано:
+
+ - создана сервисная учётка `bob`, кластерная привязка к ней кластерной роли `admin`:
+```
+$ kubectl apply -f 01-bob-sa.yaml
+serviceaccount/bob created
+$ kubectl apply -f 03-bob-clusterrolebinding-admin.yaml
+clusterrolebinding.rbac.authorization.k8s.io/bob:admin created
+$ kubectl get sa
+NAME      SECRETS   AGE
+dave      0         11m
+default   0         6d21h
+$ kubectl get clusterrolebindings | grep bob
+bob:admin ClusterRole/admin 11m
+```
+
+ - создан ServiceAccount `dave`:
+```
+$ kubectl apply -f 02-dave-sa.yaml
+serviceaccount/dave created
+$ kubectl get sa
+NAME      SECRETS   AGE
+bob       0         13m
+dave      0         11m
+default   0         6d21h
+```
+
+ - проверим, что у `bob` есть доступ к кластеру, непример на просмотр подов в namespace `kube-system`, а у `dave` - нет:
+```
+$ kubectl --as=system:serviceaccount:default:bob get pods -n kube-system
+NAME                               READY   STATUS    RESTARTS   AGE
+coredns-5d78c9869d-fc82z           1/1     Running   7          6d21h
+etcd-minikube                      1/1     Running   4          6d21h
+kube-apiserver-minikube            1/1     Running   4          6d21h
+kube-controller-manager-minikube   1/1     Running   4          6d21h
+kube-proxy-rtnvn                   1/1     Running   3          6d4h
+kube-scheduler-minikube            1/1     Running   4          6d21h
+storage-provisioner                1/1     Running   9          6d21h
+$ kubectl --as=system:serviceaccount:default:dave get pods -n kube-system
+NAME                               READY   STATUS    RESTARTS   AGE
+coredns-5d78c9869d-fc82z           1/1     Running   7          6d21h
+etcd-minikube                      1/1     Running   4          6d21h
+kube-apiserver-minikube            1/1     Running   4          6d21h
+kube-controller-manager-minikube   1/1     Running   4          6d21h
+kube-proxy-rtnvn                   1/1     Running   3          6d4h
+kube-scheduler-minikube            1/1     Running   4          6d21h
+storage-provisioner                1/1     Running   9          6d21h
+```
+Права есть и у `dave` тоже, это неожиданно. Дело в том, что админские права есть у группы `system:serviceaccounts` (в minikube), куда они оба входят. Временно удалим её и проверим снова:
+```
+$ kubectl delete clusterrolebindings serviceaccounts-cluster-admin
+clusterrolebinding.rbac.authorization.k8s.io "serviceaccounts-cluster-admin" deleted
+$ kubectl --as=system:serviceaccount:default:bob get pods -n kube-system
+NAME                               READY   STATUS    RESTARTS   AGE
+coredns-5d78c9869d-fc82z           1/1     Running   7          6d21h
+etcd-minikube                      1/1     Running   4          6d21h
+kube-apiserver-minikube            1/1     Running   4          6d21h
+kube-controller-manager-minikube   1/1     Running   4          6d21h
+kube-proxy-rtnvn                   1/1     Running   3          6d4h
+kube-scheduler-minikube            1/1     Running   4          6d21h
+storage-provisioner                1/1     Running   9          6d21h
+$ kubectl --as=system:serviceaccount:default:dave get pods -n kube-system
+Error from server (Forbidden): pods is forbidden: User "system:serviceaccount:default:dave" cannot list resource "pods" in API group "" in the namespace "kube-system"
+```
+Теперь всё хорошо, у `bob` есть права, у `dave` - нет.
+
+ - создан namespace `prometheus` и в нём ServiceAccount `carol`:
+```
+$ kubectl apply -f 01-prometheus-namespace.yaml
+namespace/prometheus created
+$ kubectl apply -f 02-carol-sa.yaml
+serviceaccount/carol created
+$ kubectl get sa -n prometheus
+NAME      SECRETS   AGE
+carol     0         63s
+default   0         3m14s
+```
+
+ - создана роль `pod-viewer`, она кластерная, т.к. доступ нужен ко всем пространствам имён
+```
+$ kubectl apply -f 03-pod-viewer-clusterrole.yaml
+clusterrole.rbac.authorization.k8s.io/pod-viewer created
+```
+
+ - создана привязка группы `system:serviceaccounts:prometheus` к ранее созданной роли. Привязка тоже кластерная, т.к. доступ нужен ко всему кластеру.
+   Если привязка будет обычная, то доступ будет только внутри пространства имён `prometheus`. Сначала проверим, что RoleBinding даёт доступ только в своём пространстве имён:
+```
+$ cat test.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: test
+  namespace: prometheus
+subjects:
+- kind: Group
+  name: system:serviceaccounts
+  namespace: prometheus
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: pod-viewer
+  apiGroup: rbac.authorization.k8s.io
+$ kubectl apply -f test.yaml
+rolebinding.rbac.authorization.k8s.io/test created
+$ kubectl --as=system:serviceaccount:prometheus:carol get pods -n prometheus
+No resources found in prometheus namespace.
+$ kubectl --as=system:serviceaccount:prometheus:carol get pods -n default
+Error from server (Forbidden): pods is forbidden: User "system:serviceaccount:prometheus:carol" cannot list resource "pods" in API group "" in the namespace "default"
+```
+Тут создана и применена RoleBinding в пространстве имён `prometheus`, которая даёт кластерную роль всем сервисным учёткам там же в `prometheus`. Затем проверено,
+что системная учётка `carol` в пространстве имён `prometheus` имеет там доступ на просмотр подов, хотя подов там нет; а просматривать поды в пространстве имён
+`default` - запрещено.
+```
+$ kubectl delete rolebinding test -n prometheus
+rolebinding.rbac.authorization.k8s.io "test" deleted
+$ cat 04-serviceaccounts-prometheus-clusterrolebinding-pod-viewer.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: serviceaccounts-prometheus:pod-viewer
+subjects:
+- kind: Group
+  name: system:serviceaccounts:prometheus
+  apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: pod-viewer
+  apiGroup: rbac.authorization.k8s.io
+$ kubectl apply -f 04-serviceaccounts-prometheus-clusterrolebinding-pod-viewer.yaml
+clusterrolebinding.rbac.authorization.k8s.io/serviceaccounts-prometheus:pod-viewer created
+$ kubectl --as=system:serviceaccount:prometheus:carol get pods -A
+NAMESPACE     NAME                               READY   STATUS    RESTARTS        AGE
+kube-system   coredns-5d78c9869d-fc82z           1/1     Running   8 (38m ago)     7d15h
+kube-system   etcd-minikube                      1/1     Running   5 (109m ago)    7d15h
+kube-system   kube-apiserver-minikube            1/1     Running   5 (38m ago)     7d15h
+kube-system   kube-controller-manager-minikube   1/1     Running   5 (109m ago)    7d15h
+kube-system   kube-proxy-rtnvn                   1/1     Running   4 (109m ago)    6d22h
+kube-system   kube-scheduler-minikube            1/1     Running   5 (109m ago)    7d15h
+kube-system   storage-provisioner                1/1     Running   10 (109m ago)   7d15h
+$ kubectl --as=system:serviceaccount:prometheus:default get pods -A
+NAMESPACE     NAME                               READY   STATUS    RESTARTS        AGE
+kube-system   coredns-5d78c9869d-fc82z           1/1     Running   8 (38m ago)     7d15h
+kube-system   etcd-minikube                      1/1     Running   5 (109m ago)    7d15h
+kube-system   kube-apiserver-minikube            1/1     Running   5 (38m ago)     7d15h
+kube-system   kube-controller-manager-minikube   1/1     Running   5 (109m ago)    7d15h
+kube-system   kube-proxy-rtnvn                   1/1     Running   4 (109m ago)    6d22h
+kube-system   kube-scheduler-minikube            1/1     Running   5 (109m ago)    7d15h
+kube-system   storage-provisioner                1/1     Running   10 (109m ago)   7d15h
+$ kubectl --as=system:serviceaccount:prometheus:carol get deploy -n prometheus
+Error from server (Forbidden): deployments.apps is forbidden: User "system:serviceaccount:prometheus:carol" cannot list resource "deployments" in API group "apps" in the namespace "prometheus"
+$ kubectl --as=system:serviceaccount:default:default get pods -A
+Error from server (Forbidden): pods is forbidden: User "system:serviceaccount:default:default" cannot list resource "pods" in API group "" at the cluster scope
+```
+Создана и применена кластерная привязка роли; доступ на просмотр подов во всех пространствах имён есть у любой сервисной учётки в `prometheus`, но нет доступа на просмотр деплойментов даже в своём пространстве имён;
+Также нет доступа на просмотр подов у например sa `default` в ns `default`.
+
+ - создано пространство имён `dev` и в нём сервисная учётка `jane`.
+```
+$ kubectl apply -f 01-dev-namespace.yaml
+namespace/dev created
+$ kubectl apply -f 02-jane-sa.yaml
+serviceaccount/jane created
+```
+
+ - создана и применена привязка sa `jane` к кластерной роли `admin`
+```
+$ kubectl apply -f 03-jane-rolebinding-admin.yaml
+rolebinding.rbac.authorization.k8s.io/jane:admin created
+```
+
+ - проверим доступ `jane`
+```
+$ kubectl --as=system:serviceaccount:dev:jane create deploy jane-deploy --image=busybox:latest -- sleep 3600
+error: failed to create deployment: deployments.apps is forbidden: User "system:serviceaccount:dev:jane" cannot create resource "deployments" in API group "apps" in the namespace "default"
+$ kubectl --as=system:serviceaccount:dev:jane -n dev create deploy jane-deploy --image=busybox:latest -- sleep 3600
+deployment.apps/jane-deploy created
+```
+У sa `jane` нет доступа на создание деплоймента в ns `default`, но есть в ns `dev`.
+
+ - создана сервисная учётка `ken` пространстве имён `dev`, создана и применена привязка sa `ken` к кластерной роли `view`
+```
+$ kubectl apply -f 04-ken-sa.yaml
+serviceaccount/ken created
+$ kubectl apply -f 05-ken-rolebinding-view.yaml
+rolebinding.rbac.authorization.k8s.io/ken:view created
+```
+
+ - проверим доступ `ken`
+```
+$ kubectl --as=system:serviceaccount:dev:ken get all -n dev
+No resources found in dev namespace.
+$ kubectl --as=system:serviceaccount:dev:ken get all
+Error from server (Forbidden): pods is forbidden: User "system:serviceaccount:dev:ken" cannot list resource "pods" in API group "" in the namespace "default"
+Error from server (Forbidden): replicationcontrollers is forbidden: User "system:serviceaccount:dev:ken" cannot list resource "replicationcontrollers" in API group "" in the namespace "default"
+Error from server (Forbidden): services is forbidden: User "system:serviceaccount:dev:ken" cannot list resource "services" in API group "" in the namespace "default"
+Error from server (Forbidden): daemonsets.apps is forbidden: User "system:serviceaccount:dev:ken" cannot list resource "daemonsets" in API group "apps" in the namespace "default"
+Error from server (Forbidden): deployments.apps is forbidden: User "system:serviceaccount:dev:ken" cannot list resource "deployments" in API group "apps" in the namespace "default"
+Error from server (Forbidden): replicasets.apps is forbidden: User "system:serviceaccount:dev:ken" cannot list resource "replicasets" in API group "apps" in the namespace "default"
+Error from server (Forbidden): statefulsets.apps is forbidden: User "system:serviceaccount:dev:ken" cannot list resource "statefulsets" in API group "apps" in the namespace "default"
+Error from server (Forbidden): horizontalpodautoscalers.autoscaling is forbidden: User "system:serviceaccount:dev:ken" cannot list resource "horizontalpodautoscalers" in API group "autoscaling" in the namespace "default"
+Error from server (Forbidden): cronjobs.batch is forbidden: User "system:serviceaccount:dev:ken" cannot list resource "cronjobs" in API group "batch" in the namespace "default"
+Error from server (Forbidden): jobs.batch is forbidden: User "system:serviceaccount:dev:ken" cannot list resource "jobs" in API group "batch" in the namespace "default"
+```
+У sa `ken` есть доступ на просмотр (почти) всех ресурсов в ns `dev`, но нет в ns `default`.
