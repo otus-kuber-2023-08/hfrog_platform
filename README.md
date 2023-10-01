@@ -1603,3 +1603,807 @@ Error from server (Forbidden): cronjobs.batch is forbidden: User "system:service
 Error from server (Forbidden): jobs.batch is forbidden: User "system:serviceaccount:dev:ken" cannot list resource "jobs" in API group "batch" in the namespace "default"
 ```
 У sa `ken` есть доступ на просмотр (почти) всех ресурсов в ns `dev`, но нет в ns `default`.
+
+# Выполнено ДЗ №6
+
+ - [*] Основное ДЗ
+ - [*] Задание со *
+
+## В процессе сделано:
+
+ - создан управляемый кластер kubernetes `otus` в облаке Yandex, настроен kubectl
+```
+Kubernetes control plane is running at https://158.160.12.170
+CoreDNS is running at https://158.160.12.170/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy
+
+To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.
+$ kubectl get nodes -o wide
+NAME                        STATUS   ROLES    AGE   VERSION   INTERNAL-IP   EXTERNAL-IP     OS-IMAGE             KERNEL-VERSION      CONTAINER-RUNTIME
+cl1rqs0kv2lussijle58-epis   Ready    <none>   67s   v1.27.3   10.129.0.8    158.160.28.63   Ubuntu 20.04.6 LTS   5.4.0-153-generic   containerd://1.6.21
+```
+
+ - установлен helm
+```
+$ helm version
+version.BuildInfo{Version:"v3.12.3", GitCommit:"3a31588ad33fe3b89af5a2a54ee1d25bfe6eaa5e", GitTreeState:"clean", GoVersion:"go1.20.7"}
+```
+
+ - добавлен helm репозиторий `https://charts.helm.sh/stable`, т.к. указанный в ДЗ недоступен
+```
+$ helm repo add stable https://kubernetes-charts.storage.googleapis.com
+Error: repo "https://kubernetes-charts.storage.googleapis.com" is no longer available; try "https://charts.helm.sh/stable" instead
+$ helm repo add stable https://charts.helm.sh/stable
+"stable" has been added to your repositories
+$ helm repo list
+NAME  	URL
+stable	https://charts.helm.sh/stable
+```
+
+ - вместо предлагаемого старого nginx-ingress установлен свежий ingress-nginx из своего репозитория:
+```
+$ helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+"ingress-nginx" has been added to your repositories
+$ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --wait --namespace=ingress-nginx --create-namespace
+Release "ingress-nginx" does not exist. Installing it now.
+NAME: ingress-nginx
+LAST DEPLOYED: Wed Sep 27 21:33:58 2023
+NAMESPACE: ingress-nginx
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+The ingress-nginx controller has been installed.
+It may take a few minutes for the LoadBalancer IP to be available.
+You can watch the status by running 'kubectl --namespace ingress-nginx get services -o wide -w ingress-nginx-controller'
+
+An example Ingress that makes use of the controller:
+  apiVersion: networking.k8s.io/v1
+  kind: Ingress
+  metadata:
+    name: example
+    namespace: foo
+  spec:
+    ingressClassName: nginx
+    rules:
+      - host: www.example.com
+        http:
+          paths:
+            - pathType: Prefix
+              backend:
+                service:
+                  name: exampleService
+                  port:
+                    number: 80
+              path: /
+    # This section is only required if TLS is to be enabled for the Ingress
+    tls:
+      - hosts:
+        - www.example.com
+        secretName: example-tls
+
+If TLS is enabled for the Ingress, a Secret containing the certificate and key must also be provided:
+
+  apiVersion: v1
+  kind: Secret
+  metadata:
+    name: example-tls
+    namespace: foo
+  data:
+    tls.crt: <base64 encoded cert>
+    tls.key: <base64 encoded key>
+  type: kubernetes.io/tls
+```
+
+ - добавлен репозиторий для `cert-manager`, установлены CRDs и сам `cert-manager` по свежей инструкции
+```
+$ helm repo add jetstack https://charts.jetstack.io
+"jetstack" has been added to your repositories
+$ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.13.0/cert-manager.crds.yaml
+customresourcedefinition.apiextensions.k8s.io/certificaterequests.cert-manager.io created
+customresourcedefinition.apiextensions.k8s.io/certificates.cert-manager.io created
+customresourcedefinition.apiextensions.k8s.io/challenges.acme.cert-manager.io created
+customresourcedefinition.apiextensions.k8s.io/clusterissuers.cert-manager.io created
+customresourcedefinition.apiextensions.k8s.io/issuers.cert-manager.io created
+customresourcedefinition.apiextensions.k8s.io/orders.acme.cert-manager.io created
+$ helm upgrade --install cert-manager jetstack/cert-manager --namespace cert-manager --create-namespace --version v1.13.0
+Release "cert-manager" does not exist. Installing it now.
+NAME: cert-manager
+LAST DEPLOYED: Wed Sep 27 21:35:55 2023
+NAMESPACE: cert-manager
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+cert-manager v1.13.0 has been deployed successfully!
+
+In order to begin issuing certificates, you will need to set up a ClusterIssuer
+or Issuer resource (for example, by creating a 'letsencrypt-staging' issuer).
+
+More information on the different types of issuers and how to configure them
+can be found in our documentation:
+
+https://cert-manager.io/docs/configuration/
+
+For information on how to configure cert-manager to automatically provision
+Certificates for Ingress resources, take a look at the `ingress-shim`
+documentation:
+
+https://cert-manager.io/docs/usage/ingress/
+```
+
+ - добавлены файлы `cert-manager/acme-http-staging.yaml` и `cert-manager/acme-http-production.yaml` с методом проверки `http01`.
+ Первый файл для проверки, второй боевой:
+```
+$ kubectl apply -f acme-http-staging.yaml
+clusterissuer.cert-manager.io/letsencrypt-staging created
+$ kubectl apply -f acme-http-production.yaml
+clusterissuer.cert-manager.io/letsencrypt-production created
+```
+
+ - создан файл `chartmuseum/values.yaml` c `ingress.hosts[0].name` `chartmuseum.84.201.157.43.nip.io`,
+`ingress.annotaions`: `cert-manager.io/cluster-issuer: "letsencrypt-production"` и `cert-manager.io/acme-challenge-type: http01`:
+
+ - установлен чарт `chartmuseum` из локальной директории, так как требовались правки. diff находится в файле `chartmuseum/helm.diff`:
+```
+$ helm upgrade --install chartmuseum --wait --namespace=chartmuseum --create-namespace --version=2.13.2 -f values.yaml ../../../7-helm/chartmuseum
+Release "chartmuseum" does not exist. Installing it now.
+WARNING: This chart is deprecated
+NAME: chartmuseum
+LAST DEPLOYED: Wed Sep 27 21:38:43 2023
+NAMESPACE: chartmuseum
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+** Please be patient while the chart is being deployed **
+
+Get the ChartMuseum URL by running:
+
+  export POD_NAME=$(kubectl get pods --namespace chartmuseum -l "app=chartmuseum" -l "release=chartmuseum" -o jsonpath="{.items[0].metadata.name}")
+  echo http://127.0.0.1:8080/
+  kubectl port-forward $POD_NAME 8080:8080 --namespace chartmuseum
+$ helm ls -n chartmuseum
+NAME       	NAMESPACE  	REVISION	UPDATED                            	STATUS  	CHART             	APP VERSION
+chartmuseum	chartmuseum	1       	2023-09-27 21:38:43.38214 +0300 MSK	deployed	chartmuseum-2.14.2	0.12.0
+```
+Созданный сайт доступен по адресу https://chartmuseum.84.201.157.43.nip.io, сертификат действителен.
+
+## Задание со *
+
+ - Для проверки работоспособности chartmuseum я установил свежую версию в namespace `chartmuseum2`
+```
+$ helm upgrade --install chartmuseum --wait --namespace=chartmuseum2 --create-namespace --version=3.10.1 -f values.yaml chartmuseum/chartmuseum
+Release "chartmuseum" does not exist. Installing it now.
+NAME: chartmuseum
+LAST DEPLOYED: Sat Sep 30 21:13:24 2023
+NAMESPACE: chartmuseum2
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+** Please be patient while the chart is being deployed **
+
+Get the ChartMuseum URL by running:
+
+  export POD_NAME=$(kubectl get pods --namespace chartmuseum2 -l "app=chartmuseum" -l "release=chartmuseum" -o jsonpath="{.items[0].metadata.name}")
+  echo http://127.0.0.1:8080/
+  kubectl port-forward $POD_NAME 8080:8080 --namespace chartmuseum2
+```
+Она использует другой URL, https://chartmuseum.84.201.157.43.hfrog.ru. Добавим helm репозиторий `mychartmuseum`:
+```
+$ helm repo add mychartmuseum https://chartmuseum.84.201.157.43.hfrog.ru
+"mychartmuseum" has been added to your repositories
+```
+Попробуем записать созданный в этой домашней работе чарт `hipster-shop/charts/frontend-0.1.0.tgz`
+```
+$ helm push hipster-shop/charts/frontend-0.1.0.tgz mychartmuseum
+Error: scheme prefix missing from remote (e.g. "oci://")
+```
+Chartmuseum не поддерживает протокол oci (Open Container Initiative), установим плагин для работы по http
+```
+$ helm plugin install https://github.com/chartmuseum/helm-push
+Downloading and installing helm-push v0.10.4 ...
+https://github.com/chartmuseum/helm-push/releases/download/v0.10.4/helm-push_0.10.4_darwin_arm64.tar.gz
+Installed plugin: cm-push
+```
+Попробуем записать чарт снова, с использованием плагина
+```
+% helm cm-push hipster-shop/charts/frontend-0.1.0.tgz mychartmuseum
+Pushing frontend-0.1.0.tgz to mychartmuseum...
+Done.
+```
+Записали успешно. Теперь попробуем установить в другое пространство имён
+```
+$ helm upgrade --install frontend2 --wait --namespace=frontend2 --create-namespace mychartmuseum/frontend
+Release "frontend2" does not exist. Installing it now.
+Error: chart "frontend" matching  not found in mychartmuseum index. (try 'helm repo update'): no chart name found
+```
+Не находит. Последуем совету и обновим локальный каталог чартов
+```
+$ helm repo update mychartmuseum
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "mychartmuseum" chart repository
+Update Complete. ⎈Happy Helming!⎈
+```
+Проверим, что есть в репозитории
+```
+$ helm search repo mychartmuseum
+NAME                  	CHART VERSION	APP VERSION	DESCRIPTION
+mychartmuseum/frontend	0.1.0        	1.16.0     	A Helm chart for Kubernetes
+```
+Отлично, чарт есть, попробуем установить его снова
+```
+$ helm upgrade --install frontend2 --wait --namespace=frontend2 --create-namespace mychartmuseum/frontend
+Release "frontend2" does not exist. Installing it now.
+Error: 1 error occurred:
+	* admission webhook "validate.nginx.ingress.kubernetes.io" denied the request: host "shop.84.201.157.43.hfrog.ru" and path "/" is already defined in ingress hipster-shop/frontend
+```
+На этот раз чарт скачивается и пытается установиться, но не устанавливается из-за конфликта ingress с существующим.
+Чинить не буду, т.к. для демонстрации использования chartmuseum описанных шагов достаточно.
+
+ - Самостоятельное задание: установить `harbor`. `harbor` установлен, но более новой версии, т.к. на починку старого впустую ушло много времени.
+   Причина в том, что в чартах указаны образы dev, которые по прошествии нескольких лет уже потеряли совместимость с использующими их манифестами.
+```
+$ helm repo add harbor https://helm.goharbor.io
+"harbor" has been added to your repositories
+$ helm upgrade --install harbor harbor/harbor -n harbor --create-namespace --version 1.13.0 -f values.yaml
+Release "harbor" does not exist. Installing it now.
+NAME: harbor
+LAST DEPLOYED: Fri Sep 29 22:22:59 2023
+NAMESPACE: harbor
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+Please wait for several minutes for Harbor deployment to complete.
+Then you should be able to visit the Harbor portal at https://harbor.84.201.157.43.nip.io
+For more details, please visit https://github.com/goharbor/harbor
+```
+Я использовал свой домен `hfrog.ru`, чтобы ускорить получение сертификатов.
+Созданный сайт доступен по адресу https://harbor.84.201.157.43.hfrog.ru, сертификат действителен.
+Там иногда падает база, так что на момент проверки сайт может быть сломан, но страница логина всё равно должна отображаться.
+
+ - Посмотрим на секреты helm с информацией о релизах, они соответствуют истории:
+```
+$ kubectl get secrets -n harbor -l owner=helm
+NAME                           TYPE                 DATA   AGE
+sh.helm.release.v1.harbor.v1   helm.sh/release.v1   1      89m
+sh.helm.release.v1.harbor.v2   helm.sh/release.v1   1      81m
+sh.helm.release.v1.harbor.v3   helm.sh/release.v1   1      39m
+sh.helm.release.v1.harbor.v4   helm.sh/release.v1   1      35m
+$ helm history harbor -n harbor
+REVISION	UPDATED                 	STATUS    	CHART        	APP VERSION	DESCRIPTION
+1       	Fri Sep 29 22:22:59 2023	superseded	harbor-1.13.0	2.9.0      	Install complete
+2       	Fri Sep 29 22:31:40 2023	superseded	harbor-1.13.0	2.9.0      	Upgrade complete
+3       	Fri Sep 29 23:13:29 2023	superseded	harbor-1.13.0	2.9.0      	Upgrade complete
+4       	Fri Sep 29 23:17:23 2023	deployed  	harbor-1.13.0	2.9.0      	Upgrade complete
+```
+
+## Задание со *
+
+ - написан `helmfile.yaml`
+```
+$ helmfile init
+...
+helmfile initialization completed!
+$ cat helmfile.yaml
+repositories:
+- name: ingress-nginx
+  url: https://kubernetes.github.io/ingress-nginx
+- name: jetstack
+  url: https://charts.jetstack.io
+- name: harbor
+  url: https://helm.goharbor.io
+
+releases:
+- name: ingress-nginx
+  namespace: ingress-nginx
+  chart: ingress-nginx/ingress-nginx
+  wait: true
+- name: cert-manager
+  namespace: cert-manager
+  chart: jetstack/cert-manager
+  version: v1.13.0
+  hooks:
+  - events: ['presync']
+    command: cert-manager-crds.sh
+- name: harbor
+  namespace: harbor
+  chart: harbor/harbor
+  version: 1.13.0
+  values:
+  - ../harbor/values.yaml
+$ helmfile deps
+Adding repo ingress-nginx https://kubernetes.github.io/ingress-nginx
+"ingress-nginx" has been added to your repositories
+
+Adding repo jetstack https://charts.jetstack.io
+"jetstack" has been added to your repositories
+
+Adding repo harbor https://helm.goharbor.io
+"harbor" has been added to your repositories
+
+Updating dependency /var/folders/fl/1pwg8mps3wgc9lcd314fshm40000gn/T/594695724
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "chartmuseum" chart repository
+...Successfully got an update from the "mychartmuseum" chart repository
+...Successfully got an update from the "ingress-nginx" chart repository
+...Successfully got an update from the "harbor" chart repository
+...Successfully got an update from the "jetstack" chart repository
+...Successfully got an update from the "stable" chart repository
+Update Complete. ⎈Happy Helming!⎈
+Saving 3 charts
+Downloading ingress-nginx from repo https://kubernetes.github.io/ingress-nginx
+Downloading cert-manager from repo https://charts.jetstack.io
+Downloading harbor from repo https://helm.goharbor.io
+Deleting outdated charts
+$ helmfile lint
+Adding repo ingress-nginx https://kubernetes.github.io/ingress-nginx
+"ingress-nginx" has been added to your repositories
+
+Adding repo jetstack https://charts.jetstack.io
+"jetstack" has been added to your repositories
+
+Adding repo harbor https://helm.goharbor.io
+"harbor" has been added to your repositories
+
+Fetching jetstack/cert-manager
+Fetching harbor/harbor
+Fetching ingress-nginx/ingress-nginx
+Linting release=ingress-nginx, chart=/var/folders/fl/1pwg8mps3wgc9lcd314fshm40000gn/T/helmfile588239832/ingress-nginx/ingress-nginx/ingress-nginx/ingress-nginx/latest/ingress-nginx
+==> Linting /var/folders/fl/1pwg8mps3wgc9lcd314fshm40000gn/T/helmfile588239832/ingress-nginx/ingress-nginx/ingress-nginx/ingress-nginx/latest/ingress-nginx
+
+1 chart(s) linted, 0 chart(s) failed
+
+Linting release=cert-manager, chart=/var/folders/fl/1pwg8mps3wgc9lcd314fshm40000gn/T/helmfile588239832/cert-manager/cert-manager/jetstack/cert-manager/v1.13.0/cert-manager
+==> Linting /var/folders/fl/1pwg8mps3wgc9lcd314fshm40000gn/T/helmfile588239832/cert-manager/cert-manager/jetstack/cert-manager/v1.13.0/cert-manager
+
+1 chart(s) linted, 0 chart(s) failed
+
+Linting release=harbor, chart=/var/folders/fl/1pwg8mps3wgc9lcd314fshm40000gn/T/helmfile588239832/harbor/harbor/harbor/harbor/1.13.0/harbor
+==> Linting /var/folders/fl/1pwg8mps3wgc9lcd314fshm40000gn/T/helmfile588239832/harbor/harbor/harbor/harbor/1.13.0/harbor
+
+1 chart(s) linted, 0 chart(s) failed
+$ helmfile sync
+Adding repo ingress-nginx https://kubernetes.github.io/ingress-nginx
+"ingress-nginx" has been added to your repositories
+
+Adding repo jetstack https://charts.jetstack.io
+"jetstack" has been added to your repositories
+
+Adding repo harbor https://helm.goharbor.io
+"harbor" has been added to your repositories
+
+Upgrading release=ingress-nginx, chart=ingress-nginx/ingress-nginx
+Upgrading release=harbor, chart=harbor/harbor
+Upgrading release=cert-manager, chart=jetstack/cert-manager
+false
+Release "harbor" has been upgraded. Happy Helming!
+NAME: harbor
+LAST DEPLOYED: Sun Oct  1 10:10:35 2023
+NAMESPACE: harbor
+STATUS: deployed
+REVISION: 5
+TEST SUITE: None
+NOTES:
+Please wait for several minutes for Harbor deployment to complete.
+Then you should be able to visit the Harbor portal at https://harbor.84.201.157.43.hfrog.ru
+For more details, please visit https://github.com/goharbor/harbor
+
+Listing releases matching ^harbor$
+false
+Release "cert-manager" has been upgraded. Happy Helming!
+NAME: cert-manager
+LAST DEPLOYED: Sun Oct  1 10:10:34 2023
+NAMESPACE: cert-manager
+STATUS: deployed
+REVISION: 2
+TEST SUITE: None
+NOTES:
+cert-manager v1.13.0 has been deployed successfully!
+
+In order to begin issuing certificates, you will need to set up a ClusterIssuer
+or Issuer resource (for example, by creating a 'letsencrypt-staging' issuer).
+
+More information on the different types of issuers and how to configure them
+can be found in our documentation:
+
+https://cert-manager.io/docs/configuration/
+
+For information on how to configure cert-manager to automatically provision
+Certificates for Ingress resources, take a look at the `ingress-shim`
+documentation:
+
+https://cert-manager.io/docs/usage/ingress/
+
+Listing releases matching ^cert-manager$
+harbor	harbor   	5       	2023-10-01 10:10:35.01689 +0300 MSK	deployed	harbor-1.13.0	2.9.0
+
+cert-manager	cert-manager	2       	2023-10-01 10:10:34.979262 +0300 MSK	deployed	cert-manager-v1.13.0	v1.13.0
+
+false
+Release "ingress-nginx" has been upgraded. Happy Helming!
+NAME: ingress-nginx
+LAST DEPLOYED: Sun Oct  1 10:10:34 2023
+NAMESPACE: ingress-nginx
+STATUS: deployed
+REVISION: 2
+TEST SUITE: None
+NOTES:
+The ingress-nginx controller has been installed.
+It may take a few minutes for the LoadBalancer IP to be available.
+You can watch the status by running 'kubectl --namespace ingress-nginx get services -o wide -w ingress-nginx-controller'
+
+An example Ingress that makes use of the controller:
+  apiVersion: networking.k8s.io/v1
+  kind: Ingress
+  metadata:
+    name: example
+    namespace: foo
+  spec:
+    ingressClassName: nginx
+    rules:
+      - host: www.example.com
+        http:
+          paths:
+            - pathType: Prefix
+              backend:
+                service:
+                  name: exampleService
+                  port:
+                    number: 80
+              path: /
+    # This section is only required if TLS is to be enabled for the Ingress
+    tls:
+      - hosts:
+        - www.example.com
+        secretName: example-tls
+
+If TLS is enabled for the Ingress, a Secret containing the certificate and key must also be provided:
+
+  apiVersion: v1
+  kind: Secret
+  metadata:
+    name: example-tls
+    namespace: foo
+  data:
+    tls.crt: <base64 encoded cert>
+    tls.key: <base64 encoded key>
+  type: kubernetes.io/tls
+
+Listing releases matching ^ingress-nginx$
+ingress-nginx	ingress-nginx	2       	2023-10-01 10:10:34.414643 +0300 MSK	deployed	ingress-nginx-4.8.0	1.9.0
+
+
+UPDATED RELEASES:
+NAME            CHART                         VERSION   DURATION
+harbor          harbor/harbor                 1.13.0          9s
+cert-manager    jetstack/cert-manager         v1.13.0         9s
+ingress-nginx   ingress-nginx/ingress-nginx   4.8.0          22s
+```
+
+ - Содаём чарт `hipster-shop` и устанавливаем его
+```
+$ helm create hipster-shop
+Creating hipster-shop
+[тут меняем файлы]
+$ helm upgrade --install hipster-shop ./hipster-shop --namespace hipster-shop --create-namespace
+Release "hipster-shop" does not exist. Installing it now.
+NAME: hipster-shop
+LAST DEPLOYED: Sat Sep 30 11:42:09 2023
+NAMESPACE: hipster-shop
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+$ kubectl get svc frontend -n hipster-shop
+NAME       TYPE       CLUSTER-IP     EXTERNAL-IP   PORT(S)        AGE
+frontend   NodePort   10.10.10.147   <none>        80:31541/TCP   2m45s
+$ kubectl port-forward svc/frontend -n hipster-shop 8000:80
+Forwarding from 127.0.0.1:8000 -> 8080
+Forwarding from [::1]:8000 -> 8080
+Handling connection for 8000
+```
+Сайт открывается и работает.
+
+```
+$ helm upgrade --install frontend ./frontend --namespace hipster-shop --create-namespace
+Release "frontend" does not exist. Installing it now.
+NAME: frontend
+LAST DEPLOYED: Sat Sep 30 12:16:22 2023
+NAMESPACE: hipster-shop
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+```
+
+ - Поменяем тип сервиса на `ClusterIP` и заодно переделаем ingress на получение сертификата. Сайт https://shop.84.201.157.43.hfrog.ru открывается.
+
+```
+$ helm delete frontend -n hipster-shop
+release "frontend" uninstalled
+```
+
+```
+$ helm dep list hipster-shop
+NAME    	VERSION	REPOSITORY        	STATUS
+frontend	0.1.0  	file://../frontend	missing
+
+$ helm dep update hipster-shop
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "ingress-nginx" chart repository
+...Successfully got an update from the "jetstack" chart repository
+...Successfully got an update from the "harbor" chart repository
+...Successfully got an update from the "stable" chart repository
+Update Complete. ⎈Happy Helming!⎈
+Saving 1 charts
+Deleting outdated charts
+$ helm dep list hipster-shop
+NAME    	VERSION	REPOSITORY        	STATUS
+frontend	0.1.0  	file://../frontend	ok
+```
+
+```
+$ helm upgrade --install hipster-shop ./hipster-shop -n hipster-shop --create-namespace
+false
+Release "hipster-shop" has been upgraded. Happy Helming!
+NAME: hipster-shop
+LAST DEPLOYED: Sat Sep 30 13:05:53 2023
+NAMESPACE: hipster-shop
+STATUS: deployed
+REVISION: 3
+TEST SUITE: None
+```
+Сайт https://shop.84.201.157.43.hfrog.ru открывается.
+
+ - Проверим передачу значений из командной строки, для этого используем `replicas` вместо `nodePort`, т.к. тип сервиса изменён на `ClusterIP`:
+```
+$ helm upgrade --install hipster-shop ./hipster-shop -n hipster-shop --create-namespace --set frontend.replicas=2
+false
+Release "hipster-shop" has been upgraded. Happy Helming!
+NAME: hipster-shop
+LAST DEPLOYED: Sat Sep 30 13:14:19 2023
+NAMESPACE: hipster-shop
+STATUS: deployed
+REVISION: 8
+TEST SUITE: None
+$ kubectl get deploy frontend -n hipster-shop
+NAME       READY   UP-TO-DATE   AVAILABLE   AGE
+frontend   2/2     2            2           9m12s
+```
+Кол-во подов в деплойменте `frontend` увеличилось до 2.
+
+## Задание со *
+
+ - Выносим redis в зависимости. Вместо используемого в helm2 `requirements.yaml` используем `Chart.yaml`. Удалим redis из файла `all-hipster-shop.yaml` и добавим зависимость
+```
+$ tail -3 hipster-shop/Chart.yaml
+- name: redis
+  version: 18.1.1
+  repository: https://charts.bitnami.com/bitnami
+$ helm dependency update
+Hang tight while we grab the latest from your chart repositories...
+...Successfully got an update from the "chartmuseum" chart repository
+...Successfully got an update from the "mychartmuseum" chart repository
+...Successfully got an update from the "harbor" chart repository
+...Successfully got an update from the "ingress-nginx" chart repository
+...Successfully got an update from the "jetstack" chart repository
+...Successfully got an update from the "stable" chart repository
+Update Complete. ⎈Happy Helming!⎈
+Saving 2 charts
+Downloading redis from repo https://charts.bitnami.com/bitnami
+Deleting outdated charts
+```
+По умолчанию redis стартует в кластерном режиме с аутентификацией, отключим это передачей настроек через командную строку. Также redis из чарта использует другое название сервиса,
+поэтому сервис в `all-hipster-shop.yaml` оставим, изменив селектор на `app.kubernetes.io/name: redis`
+```
+$ helm upgrade --install hipster-shop -n hipster-shop . --set redis.architecture=standalone --set redis.auth.enabled=false
+false
+Release "hipster-shop" has been upgraded. Happy Helming!
+NAME: hipster-shop
+LAST DEPLOYED: Sun Oct  1 11:31:42 2023
+NAMESPACE: hipster-shop
+STATUS: deployed
+REVISION: 18
+TEST SUITE: None
+```
+Можно также перенести эти настройки в файл `Values.yaml`. Сайт работает.
+
+ - Работа с helm-secrets
+```
+$ gpg --full-generate-key
+...
+$ gpg -k
+[keyboxd]
+---------
+pub   ed25519 2023-10-01 [SC]
+      9B43BB2710F227A40506F19A5B8D911CB96E667F
+uid         [  абсолютно ] aaivanov <and@hfrog.ru>
+sub   cv25519 2023-10-01 [E]
+$ cat secrets.yaml
+visibleKey: hiddenValue
+$ sops -e -i --pgp 9B43BB2710F227A40506F19A5B8D911CB96E667F secrets.yaml
+$ cat secrets.yaml
+visibleKey: ENC[AES256_GCM,data:KwBgd0NezUV/rTM=,iv:Z7wq+u0fOX658n8oythN5yq7obOjJ8FXzlTRGtlBNAM=,tag:aPPp3UAgjBaJX9fY1WZFqg==,type:str]
+sops:
+    kms: []
+    gcp_kms: []
+    azure_kv: []
+    hc_vault: []
+    age: []
+    lastmodified: "2023-10-01T12:00:18Z"
+    mac: ENC[AES256_GCM,data:KI2oVVWlaYoRK+zMpC4/aYp8VjiBjVZ/WJZGSzmjSblptHRsZu8jb3m2KxDyIu+QmR/cx/5KQRM3EQnhe4DmLIGc/zLMjQB9hoH7CaBWG99uXyibHEnd/Ojg/LkuucM7I8kIEMDq+ytW0B3LJvViUf+HcyJu0TvVriB8Dl76tGQ=,iv:Y8pf+5Fr1ewUG6wYl7RnV3avYhHK5B/I/RH9re0QV6g=,tag:t3M2s8mTYfmb21lf2cOtNw==,type:str]
+    pgp:
+        - created_at: "2023-10-01T12:00:18Z"
+          enc: |-
+            -----BEGIN PGP MESSAGE-----
+
+            hF4D7RLrnX6o53gSAQdATjxRc8lW2VnYDBeqcqdHvxDXhUsUWqHN9y5bGCLoGDkw
+            6NEtQkPabxWVA+Sg69gD7syHjhikN44THpXKjN0rfNjN+088/PtCy0BLEYqt86x/
+            1GgBCQIQdzabyn/gTsfABpvKGLNxInufHCKX7O69UfF9WJXJWv8orcnF/EKAGtcE
+            /fqoh8svu8cxEzwzGkBnABsmK3JFYsqRXQ1e/72q7OP1H46A19lPzB35BuNmObPK
+            YO1Co/crBmUlMQ==
+            =PnCs
+            -----END PGP MESSAGE-----
+          fp: 9B43BB2710F227A40506F19A5B8D911CB96E667F
+    unencrypted_suffix: _unencrypted
+    version: 3.8.0
+$ helm secrets decrypt secrets.yaml && echo
+visibleKey: hiddenValue
+$ sops -d secrets.yaml
+visibleKey: hiddenValue
+```
+Создадим файл `templates/secret.yaml` и попробуем установить чарт `frontend`
+```
+$ helm secrets upgrade --install frontend . --namespace=hipster-shop -f secrets.yaml
+[helm-secrets] Decrypt: secrets.yaml
+Release "frontend" does not exist. Installing it now.
+Error: Unable to continue with install: Service "frontend" in namespace "hipster-shop" exists and cannot be imported into the current release: invalid ownership metadata; annotation validation error: key "meta.helm.sh/release-name" must equal "frontend": current value is "hipster-shop"
+
+[helm-secrets] Removed: secrets.yaml.dec
+Error: plugin "secrets" exited with error
+```
+Ошибка. Дело в том, что сервис `frontend` в пространстве имён `hipster-shop` уже существует, мы его развернули как зависимость чарта `hipster-shop`, и отдельно helm его обновить не даёт.
+Попробуем его развернуть отдельно
+```
+$ helm secrets upgrade --install frontend . --namespace=frontend --create-namespace -f secrets.yaml
+[helm-secrets] Decrypt: secrets.yaml
+false
+Error: UPGRADE FAILED: failed to create resource: admission webhook "validate.nginx.ingress.kubernetes.io" denied the request: host "shop.84.201.157.43.hfrog.ru" and path "/" is already defined in ingress hipster-shop/frontend
+
+[helm-secrets] Removed: secrets.yaml.dec
+Error: plugin "secrets" exited with error
+$ kubectl get secret secret -n frontend -o jsonpath='{.data.visibleKey}' | base64 -d && echo
+hiddenValue
+```
+Установка не прошла из-за ingress, тем не менее секрет успешно создан.
+`helm-secrets` можно использовать для расшифровки паролей для аутентификации. Для защиты секретов от записи в репозиторий в открытом виде можно использовать скрипты, запускаемые перед коммитом, и в них проверять, зашифрованы ли данные.
+
+ - Запись чартов в harbor. Мне удалось записать чарты в созданный harbor, но `helm repo add` не работает, видимо есть только поддержка oci, а работа с oci не предполагает repo add, как описано в https://helm.sh/docs/topics/registries/
+```
+$ helm registry login harbor.84.201.157.43.hfrog.ru
+Username: admin
+Password:
+Login Succeeded
+$ helm push hipster-shop/charts/frontend-0.1.0.tgz oci://harbor.84.201.157.43.hfrog.ru/library
+Pushed: harbor.84.201.157.43.hfrog.ru/library/frontend:0.1.0
+Digest: sha256:ac213d93a3555081b2e4381c16c14f9029816ae3c8f78bdef4527faab82b596c
+$ helm package hipster-shop
+Successfully packaged chart and saved it to: /Users/aaivanov/Yandex.Disk.localized/Обучение/O/2023 Otus Kubernetes/hfrog_platform/kubernetes-templating/hipster-shop-0.1.0.tgz
+$ helm push hipster-shop-0.1.0.tgz oci://harbor.84.201.157.43.hfrog.ru/library
+Pushed: harbor.84.201.157.43.hfrog.ru/library/hipster-shop:0.1.0
+Digest: sha256:21623c9f0bce723ece3e9c4153a35d33685d99d718b672148a8ff090893d9e63
+$ helm repo add templating https://harbor.84.201.157.43.hfrog.ru/chartrepo/library
+Error: looks like "https://harbor.84.201.157.43.hfrog.ru/chartrepo/library" is not a valid chart repository or cannot be reached: failed to fetch https://harbor.84.201.157.43.hfrog.ru/chartrepo/library/index.yaml : 404 Not Found
+```
+Поэтому я записал чарты в chartmuseum и указал его в `repo.sh`
+```
+$ helm repo list | grep templating
+templating   	https://chartmuseum.84.201.157.43.hfrog.ru
+$ helm search repo templating
+NAME                   	CHART VERSION	APP VERSION	DESCRIPTION
+templating/frontend    	0.1.0        	1.16.0     	A Helm chart for Kubernetes
+templating/hipster-shop	0.1.0        	1.16.0     	A Helm chart for Kubernetes
+```
+
+```
+$ kubecfg version
+kubecfg version: v0.34.0
+jsonnet version: v0.20.0
+client-go version: v0.0.0-master+$Format:%H$
+```
+
+```
+$ kubecfg update services.jsonnet --namespace hipster-shop
+INFO  Validating deployments paymentservice
+INFO  validate object "apps/v1, Kind=Deployment"
+INFO  Validating services paymentservice
+INFO  validate object "/v1, Kind=Service"
+INFO  Validating deployments shippingservice
+INFO  validate object "apps/v1, Kind=Deployment"
+INFO  Validating services shippingservice
+INFO  validate object "/v1, Kind=Service"
+INFO  Fetching schemas for 4 resources
+INFO  Creating services paymentservice
+INFO  Creating services shippingservice
+INFO  Creating deployments paymentservice
+INFO  Creating deployments shippingservice
+```
+Сервис работает.
+
+## Задание со *
+
+ - Сервис `cartservice` переведён на jsonnet с использованием `qbec`. Сначала создаём базовую структуру
+```
+$ qbec init cartservice
+using server URL "https://158.160.12.170" and default namespace "default" for the default environment
+wrote cartservice/params.libsonnet
+wrote cartservice/environments/base.libsonnet
+wrote cartservice/environments/default.libsonnet
+wrote cartservice/qbec.yaml
+```
+Затем создаём параметризованные манифесты на jsonnet в директории `components`, прописываем параметры в `environments/base.libsonnet`, правим namespace в `qbec.yaml`, проверяем и деплоим:
+```
+$ tree
+.
+├── components
+│   ├── deployment.jsonnet
+│   └── service.jsonnet
+├── environments
+│   ├── base.libsonnet
+│   └── default.libsonnet
+├── params.libsonnet
+└── qbec.yaml
+$ qbec show default > manifests.yaml # Смотрим что получилось, отлаживаем
+$ qbec apply -n default # Отладочный прогон без применения манифестов
+$ qbec apply default
+setting cluster to yc-managed-k8s-cat0hmpsqp6rp88iiouh
+setting context to yc-otus
+cluster metadata load took 812ms
+2 components evaluated in 8ms
+
+will synchronize 2 object(s)
+
+Do you want to continue [y/n]: y
+2 components evaluated in 5ms
+create deployments cartservice -n hipster-shop (source deployment)
+create services cartservice -n hipster-shop (source service)
+waiting for deletion list to be returned
+server objects load took 635ms
+---
+stats:
+  created:
+  - deployments cartservice -n hipster-shop (source deployment)
+  - services cartservice -n hipster-shop (source service)
+
+waiting for readiness of 1 objects
+  - deployments cartservice -n hipster-shop
+
+  0s    : deployments cartservice -n hipster-shop :: 0 of 1 updated replicas are available
+✓ 21s   : deployments cartservice -n hipster-shop :: successfully rolled out (0 remaining)
+
+✓ 21s: rollout complete
+command took 25.13s
+```
+
+ - Переделан на Kustomize сервис `adservice`
+```
+$ kubectl create ns hipster-shop-dev
+namespace/hipster-shop-dev created
+$ kubectl apply -k kustomize/overrides/dev
+service/dev-adservice created
+deployment.apps/dev-adservice created
+$ kubectl apply -k kustomize/overrides/prod
+service/adservice created
+deployment.apps/adservice created
+$ kubectl get pods -n hipster-shop-dev
+NAME                             READY   STATUS    RESTARTS   AGE
+dev-adservice-6d7c7bd86d-x26ft   1/1     Running   0          4m19s
+```
+
+## Как проверить работоспособность:
+
+ - Перейти по ссылке https://chartmuseum.84.201.157.43.nip.io
+ - Перейти по ссылке https://chartmuseum.84.201.157.43.hfrog.ru
+ - Перейти по ссылке https://harbor.84.201.157.43.hfrog.ru
+ - Перейти по ссылке https://shop.84.201.157.43.hfrog.ru
+
