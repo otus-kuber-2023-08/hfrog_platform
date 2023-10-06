@@ -1,0 +1,13 @@
+version: v0.157.0
+dependencies:
+- name: cert-manager
+  repository: https://charts.jetstack.io
+  version: v1.13.0
+- name: harbor
+  repository: https://helm.goharbor.io
+  version: 1.13.0
+- name: ingress-nginx
+  repository: https://kubernetes.github.io/ingress-nginx
+  version: 4.8.0
+digest: sha256:3b998018505fe757367288f1f0c6daa79687b8e46c14282ab06433a27adad916
+generated: "2023-10-01T09:57:33.745518+03:00"
