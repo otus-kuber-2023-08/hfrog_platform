@@ -2417,27 +2417,27 @@ dev-adservice-6d7c7bd86d-x26ft   1/1     Running   0          4m19s
 
  - Создадим манифест с несуществующим типом ресурса и попробуем применить его, выдаётся ошибка:
 ```
-$ kubectl apply -f deploy/cr.yaml
-error: resource mapping not found for name: "mysql-instance" namespace: "" from "deploy/cr.yaml": no matches for kind "MySQL" in version "otus.homework/v1"
+$ kubectl apply -f deploy/cr.yml
+error: resource mapping not found for name: "mysql-instance" namespace: "" from "deploy/cr.yml": no matches for kind "MySQL" in version "otus.homework/v1"
 ensure CRDs are installed first
 ```
 
  - Создадим манифест с CRD из ДЗ и попробуем применить его, выдаётся ошибка:
 ```
-$ kubectl apply -f deploy/crd.yaml
-error: resource mapping not found for name: "mysqls.otus.homework" namespace: "" from "deploy/crd.yaml": no matches for kind "CustomResourceDefinition" in version "apiextensions.k8s.io/v1beta1"
+$ kubectl apply -f deploy/crd.yml
+error: resource mapping not found for name: "mysqls.otus.homework" namespace: "" from "deploy/crd.yml": no matches for kind "CustomResourceDefinition" in version "apiextensions.k8s.io/v1beta1"
 ensure CRDs are installed first
 ```
 Версия `apiextensions.k8s.io/v1beta1` более не работает, узнаем текущую через `kubectl api-resources` и поменяем:
 ```
 $ kubectl api-resources | grep -i custom
 customresourcedefinitions         crd,crds            apiextensions.k8s.io/v1                false        CustomResourceDefinition
-$ kubectl apply -f deploy/crd.yaml
+$ kubectl apply -f deploy/crd.yml
 The CustomResourceDefinition "mysqls.otus.homework" is invalid: spec.versions[0].schema.openAPIV3Schema: Required value: schemas are required
 ```
 В текущей версии схема обязательна, добавим её
 ```
-$ cat deploy/crd.yaml
+$ cat deploy/crd.yml
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -2470,19 +2470,19 @@ spec:
                 type: string
               storage_size:
                 type: string
-$ kubectl apply -f deploy/crd.yaml
+$ kubectl apply -f deploy/crd.yml
 customresourcedefinition.apiextensions.k8s.io/mysqls.otus.homework created
 ```
 Определение ресурса успешно создано.
 
  - Снова пробуем создать кастомный ресурс
 ```
-$ kubectl apply -f deploy/cr.yaml
-Error from server (BadRequest): error when creating "deploy/cr.yaml": MySQL in version "v1" cannot be handled as a MySQL: strict decoding error: unknown field "useless_data"
+$ kubectl apply -f deploy/cr.yml
+Error from server (BadRequest): error when creating "deploy/cr.yml": MySQL in version "v1" cannot be handled as a MySQL: strict decoding error: unknown field "useless_data"
 ```
 В манифесте содержится поле `useless_data` вне спецификации, удалим его и проверим снова
 ```
-$ kubectl apply -f deploy/cr.yaml
+$ kubectl apply -f deploy/cr.yml
 mysql.otus.homework/mysql-instance created
 ```
 
@@ -2512,11 +2512,11 @@ Spec:
   storage_size:  1Gi
 Events:          <none>
 ```
-Значения полей соответствуют указанным в `cr.yaml`
+Значения полей соответствуют указанным в `cr.yml`
 
- - Уберём `password` из `cr.yaml` и применим его снова, применяется успешно, пароля нет:
+ - Уберём `password` из `cr.yml` и применим его снова, применяется успешно, пароля нет:
 ```
-$ kubectl apply -f deploy/cr.yaml
+$ kubectl apply -f deploy/cr.yml
 mysql.otus.homework/mysql-instance configured
 $ kubectl get mysql mysql-instance -o jsonpath='{.spec}' | jq
 {
@@ -2528,7 +2528,7 @@ $ kubectl get mysql mysql-instance -o jsonpath='{.spec}' | jq
 
  - Добавим требование пароля в схеме и проверим
 ```
-$ cat deploy/crd.yaml
+$ cat deploy/crd.yml
 ...
         properties:
           spec:
@@ -2539,13 +2539,13 @@ $ cat deploy/crd.yaml
               image:
                 type: string
 ...
-$ kubectl apply -f deploy/crd.yaml
+$ kubectl apply -f deploy/crd.yml
 customresourcedefinition.apiextensions.k8s.io/mysqls.otus.homework configured
-$ kubectl apply -f deploy/cr.yaml
+$ kubectl apply -f deploy/cr.yml
 mysql.otus.homework/mysql-instance unchanged
 $ kubectl delete mysql mysql-instance
 mysql.otus.homework "mysql-instance" deleted
-$ kubectl apply -f deploy/cr.yaml
+$ kubectl apply -f deploy/cr.yml
 The MySQL "mysql-instance" is invalid: spec.password: Required value
 ```
 Существующий объект остаётся без изменений, а новый уже не создаётся. Вернём пароль обратно.
@@ -2620,7 +2620,7 @@ PV через непродолжительное время удаляется �
 
  - Добавим в обработчик создания ресурса добавление связей а также обработчик удаления, и проверим:
 ```
-$ kubectl apply -f deploy/cr.yaml
+$ kubectl apply -f deploy/cr.yml
 mysql.otus.homework/mysql-instance created
 $ kubectl delete mysql mysql-instance
 mysql.otus.homework "mysql-instance" deleted
@@ -2760,7 +2760,7 @@ backup-mysql-instance-job   1/1           15s        4m47s
 
  - Заново создадим `mysql-instance`
 ```
-$ kubectl apply -f deploy/cr.yaml
+$ kubectl apply -f deploy/cr.yml
 mysql.otus.homework/mysql-instance created
 ```
 
@@ -2828,19 +2828,19 @@ The push refers to repository [docker.io/hfrog/crd-mysql-controller]
 
  - Создадим манифесты для деплоймента контроллера из созданного образа, сервисной учётки, роли и привязки, и применим их
 ```
-$ kubectl apply -f service-account.yaml
+$ kubectl apply -f service-account.yml
 serviceaccount/mysql-operator created
-$ kubectl apply -f role.yaml
+$ kubectl apply -f role.yml
 clusterrole.rbac.authorization.k8s.io/mysql-operator created
-$ kubectl apply -f role-binding.yaml
+$ kubectl apply -f role-binding.yml
 clusterrolebinding.rbac.authorization.k8s.io/workshop-operator created
-$ kubectl apply -f deploy-operator.yaml
+$ kubectl apply -f deploy-operator.yml
 deployment.apps/mysql-operator created
 ```
 
  - Снова создадим `mysql-instance`
 ```
-$ kubectl apply -f cr.yaml
+$ kubectl apply -f cr.yml
 mysql.otus.homework/mysql-instance created
 ```
 
@@ -2903,7 +2903,7 @@ backup-mysql-instance-pvc   Bound    backup-mysql-instance-pv   2Gi        RWO  
 
  - И опять создадим `mysql-instance`, дождёмся завершения задачи восстановления, подключимся к базе и посмотрим, есть ли там свежие данные
 ```
-$ kubectl apply -f cr.yaml
+$ kubectl apply -f cr.yml
 mysql.otus.homework/mysql-instance created
 $ kubectl get pods
 NAME                               READY   STATUS      RESTARTS   AGE
@@ -3021,7 +3021,7 @@ def change_password(body, old, new, **kwargs):
 
 - Проверим:
 ```
-$ kubectl apply -f deploy/cr.yaml
+$ kubectl apply -f deploy/cr.yml
 mysql.otus.homework/mysql-instance configured
 [вывод контроллера]
 [2023-10-13 20:40:28,768] kopf.objects         [INFO    ] [default/mysql-instance] Timer 'get_jobs_status' succeeded.
