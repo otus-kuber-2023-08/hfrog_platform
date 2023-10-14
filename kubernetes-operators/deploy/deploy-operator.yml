@@ -15,5 +15,5 @@ spec:
       serviceAccountName: mysql-operator
       containers:
         - name: operator
-          image: "hfrog/crd-mysql-controller:0.0.1"
+          image: "hfrog/crd-mysql-controller:0.0.3"
           imagePullPolicy: "Always"
