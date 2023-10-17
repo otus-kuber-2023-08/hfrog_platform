@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: backup-{{ name }}-pv
+spec:
+  persistentVolumeReclaimPolicy: Retain
+  accessModes:
+  - ReadWriteOnce
+  capacity:
+    storage: 2Gi
+  storageClassName: yc-network-hdd
+  csi:
+    driver: disk-csi-driver.mks.ycloud.io
+    volumeHandle: epdpmf4a3e1jg0kloqqs

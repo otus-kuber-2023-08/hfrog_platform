@@ -2407,3 +2407,636 @@ dev-adservice-6d7c7bd86d-x26ft   1/1     Running   0          4m19s
  - Перейти по ссылке https://harbor.84.201.157.43.hfrog.ru
  - Перейти по ссылке https://shop.84.201.157.43.hfrog.ru
 
+# Выполнено ДЗ №7
+
+ - [*] Основное ДЗ
+ - [*] Задание с Python
+ - [*] Задание со *
+
+## В процессе сделано:
+
+ - Создадим манифест с несуществующим типом ресурса и попробуем применить его, выдаётся ошибка:
+```
+$ kubectl apply -f deploy/cr.yml
+error: resource mapping not found for name: "mysql-instance" namespace: "" from "deploy/cr.yml": no matches for kind "MySQL" in version "otus.homework/v1"
+ensure CRDs are installed first
+```
+
+ - Создадим манифест с CRD из ДЗ и попробуем применить его, выдаётся ошибка:
+```
+$ kubectl apply -f deploy/crd.yml
+error: resource mapping not found for name: "mysqls.otus.homework" namespace: "" from "deploy/crd.yml": no matches for kind "CustomResourceDefinition" in version "apiextensions.k8s.io/v1beta1"
+ensure CRDs are installed first
+```
+Версия `apiextensions.k8s.io/v1beta1` более не работает, узнаем текущую через `kubectl api-resources` и поменяем:
+```
+$ kubectl api-resources | grep -i custom
+customresourcedefinitions         crd,crds            apiextensions.k8s.io/v1                false        CustomResourceDefinition
+$ kubectl apply -f deploy/crd.yml
+The CustomResourceDefinition "mysqls.otus.homework" is invalid: spec.versions[0].schema.openAPIV3Schema: Required value: schemas are required
+```
+В текущей версии схема обязательна, добавим её
+```
+$ cat deploy/crd.yml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: mysqls.otus.homework # имя CRD должно иметь формат plural.group
+spec:
+  scope: Namespaced
+  group: otus.homework
+  names:
+    kind: MySQL
+    plural: mysqls
+    singular: mysql
+    shortNames:
+    - ms
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              image:
+                type: string
+              database:
+                type: string
+              password:
+                type: string
+              storage_size:
+                type: string
+$ kubectl apply -f deploy/crd.yml
+customresourcedefinition.apiextensions.k8s.io/mysqls.otus.homework created
+```
+Определение ресурса успешно создано.
+
+ - Снова пробуем создать кастомный ресурс
+```
+$ kubectl apply -f deploy/cr.yml
+Error from server (BadRequest): error when creating "deploy/cr.yml": MySQL in version "v1" cannot be handled as a MySQL: strict decoding error: unknown field "useless_data"
+```
+В манифесте содержится поле `useless_data` вне спецификации, удалим его и проверим снова
+```
+$ kubectl apply -f deploy/cr.yml
+mysql.otus.homework/mysql-instance created
+```
+
+ - Посмотрим, существуют ли созданные объекты и взглянем на описание
+```
+$ kubectl get crd | grep mysql
+mysqls.otus.homework                             2023-10-07T14:48:03Z
+$ kubectl get mysql
+NAME             AGE
+mysql-instance   64s
+$ kubectl describe mysql mysql-instance
+Name:         mysql-instance
+Namespace:    default
+Labels:       <none>
+Annotations:  <none>
+API Version:  otus.homework/v1
+Kind:         MySQL
+Metadata:
+  Creation Timestamp:  2023-10-07T14:50:16Z
+  Generation:          1
+  Resource Version:    4071622
+  UID:                 11f2b8b2-cb57-498e-b31c-a55bac388f07
+Spec:
+  Database:      otus-database
+  Image:         mysql:5.7
+  Password:      otuspassword
+  storage_size:  1Gi
+Events:          <none>
+```
+Значения полей соответствуют указанным в `cr.yml`
+
+ - Уберём `password` из `cr.yml` и применим его снова, применяется успешно, пароля нет:
+```
+$ kubectl apply -f deploy/cr.yml
+mysql.otus.homework/mysql-instance configured
+$ kubectl get mysql mysql-instance -o jsonpath='{.spec}' | jq
+{
+  "database": "otus-database",
+  "image": "mysql:5.7",
+  "storage_size": "1Gi"
+}
+```
+
+ - Добавим требование пароля в схеме и проверим
+```
+$ cat deploy/crd.yml
+...
+        properties:
+          spec:
+            type: object
+            required:
+            - password
+            properties:
+              image:
+                type: string
+...
+$ kubectl apply -f deploy/crd.yml
+customresourcedefinition.apiextensions.k8s.io/mysqls.otus.homework configured
+$ kubectl apply -f deploy/cr.yml
+mysql.otus.homework/mysql-instance unchanged
+$ kubectl delete mysql mysql-instance
+mysql.otus.homework "mysql-instance" deleted
+$ kubectl apply -f deploy/cr.yml
+The MySQL "mysql-instance" is invalid: spec.password: Required value
+```
+Существующий объект остаётся без изменений, а новый уже не создаётся. Вернём пароль обратно.
+
+ - Напишем контроллер `build/mysql-operator.py`, создадим требуемые шаблоны, установим требуемые питоновские пакеты через `pip` и запустим его
+```
+$ kopf run mysql-operator.py
+/Library/Python/3.9/site-packages/kopf/_core/reactor/running.py:179: FutureWarning: Absence of either namespaces or cluster-wide flag will become an error soon. For now, switching to the cluster-wide mode for backward compatibility.
+  warnings.warn("Absence of either namespaces or cluster-wide flag will become an error soon."
+[2023-10-07 20:18:00,761] kopf._core.engines.a [INFO    ] Initial authentication has been initiated.
+[2023-10-07 20:18:01,698] kopf.activities.auth [INFO    ] Activity 'login_via_client' succeeded.
+[2023-10-07 20:18:01,699] kopf._core.engines.a [INFO    ] Initial authentication has finished.
+```
+
+ - Адаптируем шаблоны mysql PV и PVC к Яндекс облаку.
+По смыслу ДЗ том, используемый для базы, не должен быть постоянным т.к. мы базу бэкапим и восстанавливаем, поэтому сделаем его динамическим,
+и просто удалим `mysql-pv.yml.j2` вместе с поддержкой его в контроллере. А в PVC удалим более ненужный селектор для привязки PV и PVC по метке,
+а также добавим класс хранилища `storageClassName: yc-network-hdd`
+
+ - Создадим кастомный ресурс mysql и посмотрим логи контроллера
+```
+[2023-10-07 20:24:01,214] kopf.objects         [INFO    ] [default/mysql-instance] Handler 'mysql_on_create' succeeded.
+[2023-10-07 20:24:01,214] kopf.objects         [INFO    ] [default/mysql-instance] Creation is processed: 1 succeeded; 0 failed.
+```
+Если во время запуска контроллера кастомный ресурс уже существует, обработчик всё равно вызывается, и в нашем случае выдаёт ошибку создания деплоя, PV, PVC и сервиса.
+Идемпотентность создания надо специально обеспечить, не пытаясь создавать уже существующие ресурсы.
+В отслеживаемые кастомные ресурсы контроллер добавляет свою аннотацию, например
+```
+Annotations:  kopf.zalando.org/last-handled-configuration:
+                {"spec":{"database":"otus-database","image":"mysql:5.7","password":"very_secret_password","storage_size":"1Gi"}}
+```
+Когда контроллер стартует, он вызывает обработчики для ресурсов без аннотаций или если их состояние с тех пор изменилось,
+этим объясняется вызов обработчика для уже существующего ресурса. См. https://kopf.readthedocs.io/en/stable/continuity/#downtime
+Кстати, есть возможность написать обработчик для события 'Resume', он вызывается как раз когда контроллер стартует и обнаруживает существующий объект с аннотацией:
+```
+@kopf.on.resume('otus.homework', 'v1', 'mysqls')
+def mysql_on_resume(body, spec, **kwargs):
+    kopf.info(body, reason='Resume', message='Resume handler is called')
+```
+Вот как выглядят эти события в описании ресурса:
+```
+$ kubectl describe mysql mysql-instance | tail -6
+  Normal  Logging  7m25s  kopf  Resuming is processed: 1 succeeded; 0 failed.
+  Normal  Resume   7m25s  kopf  Resume handler is called
+  Normal  Logging  7m25s  kopf  Handler 'mysql_on_resume' succeeded.
+  Normal  Logging  4m25s  kopf  Resuming is processed: 1 succeeded; 0 failed.
+  Normal  Resume   4m25s  kopf  Resume handler is called
+  Normal  Logging  4m25s  kopf  Handler 'mysql_on_resume' succeeded.
+```
+
+ - Удалим кастомный ресурс `mysql-instance`, убедимся что созданные контроллером ресурсы не удалены и удалим их руками
+```
+$ kubectl delete mysql mysql-instance
+mysql.otus.homework "mysql-instance" deleted
+$ kubectl get all | grep mysql
+pod/mysql-instance-7c5cf946cb-4w66c   1/1     Running   0          3m36s
+service/mysql-instance   ClusterIP   None           <none>        3306/TCP   3m36s
+deployment.apps/mysql-instance   1/1     1            1           3m36s
+replicaset.apps/mysql-instance-7c5cf946cb   1         1         1       3m36s
+$ kubectl get pv | grep mysql
+pvc-d81b1d03-4f7d-455d-ac22-66cd482646a4   1Gi        RWO            Delete           Bound       default/mysql-instance-pvc               yc-network-hdd            3m40s
+$ kubectl get pvc | grep mysql
+mysql-instance-pvc   Bound    pvc-d81b1d03-4f7d-455d-ac22-66cd482646a4   1Gi        RWO            yc-network-hdd   3m50s
+$ kubectl delete deploy mysql-instance
+deployment.apps "mysql-instance" deleted
+$ kubectl delete svc mysql-instance
+service "mysql-instance" deleted
+$ kubectl delete pvc mysql-instance-pvc
+persistentvolumeclaim "mysql-instance-pvc" deleted
+```
+PV через непродолжительное время удаляется автоматически, т.к. был создан динамически.
+
+ - Добавим в обработчик создания ресурса добавление связей а также обработчик удаления, и проверим:
+```
+$ kubectl apply -f deploy/cr.yml
+mysql.otus.homework/mysql-instance created
+$ kubectl delete mysql mysql-instance
+mysql.otus.homework "mysql-instance" deleted
+$ kubectl get all | grep mysql
+$ kubectl get pvc | grep mysql
+$ kubectl get pv | grep mysql
+[лог контроллера]
+[2023-10-07 22:43:16,444] kopf.objects         [INFO    ] [default/mysql-instance] Handler 'mysql_on_create' succeeded.
+[2023-10-07 22:43:16,445] kopf.objects         [INFO    ] [default/mysql-instance] Creation is processed: 1 succeeded; 0 failed.
+[2023-10-07 22:46:27,808] kopf.objects         [INFO    ] [default/mysql-instance] Handler 'delete_object_make_backup' succeeded.
+[2023-10-07 22:46:27,808] kopf.objects         [INFO    ] [default/mysql-instance] Deletion is processed: 1 succeeded; 0 failed.
+[2023-10-07 22:46:27,953] kopf.objects         [WARNING ] [default/mysql-instance] Patching failed with inconsistencies: (('remove', ('status',), {'delete_object_make_backup': {'message': 'mysql and its children resources deleted'}}, None),)
+```
+
+ - Добавим в контроллер код создания PV и PVC для бэкапа, создание задачи восстановления при создании ресурса и её зависимость,
+   функцию удаления успешно завершённых задач (Job), функцию ожидания завершения задачи.
+   Также добавим в обработчике удаления CR MySQL удаление успешных задач, создание задачи бэкапа и ожидание её завершения.
+
+ - Создадим ресурс и проверим наличие томов:
+```
+$ kubectl get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                               STORAGECLASS     REASON   AGE
+backup-mysql-instance-pv                   2Gi        RWO            Retain           Bound    default/backup-mysql-instance-pvc   yc-network-hdd            2d23h
+pvc-e85dc75d-c8ef-4736-b202-bd8f2cfcb9bf   1Gi        RWO            Delete           Bound    default/mysql-instance-pvc          yc-network-hdd            23m
+$ kubectl get pvc
+NAME                        STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS     AGE
+backup-mysql-instance-pvc   Bound    backup-mysql-instance-pv                   2Gi        RWO            yc-network-hdd   2d23h
+mysql-instance-pvc          Bound    pvc-e85dc75d-c8ef-4736-b202-bd8f2cfcb9bf   1Gi        RWO            yc-network-hdd   23m
+```
+Здесь `backup-mysql-instance-pv` это статический том, созданный на явно созданном диске Яндекс облака, а `pvc-e85dc75d-c8ef-4736-b202-bd8f2cfcb9bf` это
+динамический том, созданный по заявке `mysql-instance-pvc`.
+Кстати, я немного поменял команду в заче восстановления, чтобы она успешно выходила в случае отсутствия файла для восстановления. В противном случае задача будет
+пытаться запускаться снова и снова.
+
+ - Подключимся к базе, создадим таблицу и заполним её данными
+```
+$ kubectl get pods
+NAME                               READY   STATUS      RESTARTS   AGE
+mysql-instance-7c5cf946cb-gghg4    1/1     Running     0          29m
+restore-mysql-instance-job-mrz4c   0/1     Completed   0          29m
+$ kubectl exec -ti mysql-instance-7c5cf946cb-gghg4 -- bash
+bash-4.2# mysql -p otus-database
+Enter password:
+Welcome to the MySQL monitor.  Commands end with ; or \g.
+Your MySQL connection id is 2
+Server version: 5.7.43 MySQL Community Server (GPL)
+
+Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+
+Oracle is a registered trademark of Oracle Corporation and/or its
+affiliates. Other names may be trademarks of their respective
+owners.
+
+Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+
+mysql> show tables;
+Empty set (0.00 sec)
+
+mysql> CREATE TABLE test (
+    ->      id smallint unsigned not null auto_increment, name varchar(20) not null, constraint
+    ->      pk_example primary key (id) );
+Query OK, 0 rows affected (0.03 sec)
+
+mysql> describe test;
++-------+----------------------+------+-----+---------+----------------+
+| Field | Type                 | Null | Key | Default | Extra          |
++-------+----------------------+------+-----+---------+----------------+
+| id    | smallint(5) unsigned | NO   | PRI | NULL    | auto_increment |
+| name  | varchar(20)          | NO   |     | NULL    |                |
++-------+----------------------+------+-----+---------+----------------+
+2 rows in set (0.01 sec)
+
+mysql> INSERT INTO test ( id, name ) VALUES ( null, 'some data' );
+Query OK, 1 row affected (0.00 sec)
+
+mysql> INSERT INTO test ( id, name ) VALUES ( null, 'some data-2' );
+Query OK, 1 row affected (0.00 sec)
+
+mysql> INSERT INTO test ( id, name ) VALUES ( null, '333' );
+Query OK, 1 row affected (0.02 sec)
+
+mysql> select * from test;
++----+-------------+
+| id | name        |
++----+-------------+
+|  1 | some data   |
+|  2 | some data-2 |
+|  3 | 333         |
++----+-------------+
+3 rows in set (0.00 sec)
+```
+
+ - Удалим ресурс MySQL mysql-instance и посмотрим вывод контроллера
+```
+$ kubectl delete mysql mysql-instance
+mysql.otus.homework "mysql-instance" deleted
+[тут пауза, пока работает задача бэкапа]
+```
+
+```
+start deletion
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with name backup-mysql-instance-job found, wait until end
+job with backup-mysql-instance-job is successful
+[2023-10-11 21:01:10,350] kopf.objects         [INFO    ] [default/mysql-instance] Handler 'delete_object_make_backup' succeeded.
+[2023-10-11 21:01:10,350] kopf.objects         [INFO    ] [default/mysql-instance] Deletion is processed: 1 succeeded; 0 failed.
+```
+
+ - Посмотрим список томов
+```
+$ kubectl get pv
+NAME                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                               STORAGECLASS     REASON   AGE
+backup-mysql-instance-pv   2Gi        RWO            Retain           Bound    default/backup-mysql-instance-pvc   yc-network-hdd            2d23h
+```
+Остался один статический том с бэкапом, динамический с базой удалён
+
+ - Посмотрим список задач
+```
+$ kubectl get jobs
+NAME                        COMPLETIONS   DURATION   AGE
+backup-mysql-instance-job   1/1           15s        4m47s
+```
+Задача бэкапа выполнена успешно
+
+ - Заново создадим `mysql-instance`
+```
+$ kubectl apply -f deploy/cr.yml
+mysql.otus.homework/mysql-instance created
+```
+
+ - Посмотрим список задач
+```
+$ kubectl get jobs
+NAME                         COMPLETIONS   DURATION   AGE
+backup-mysql-instance-job    1/1           15s        8m22s
+restore-mysql-instance-job   1/1           56s        85s
+```
+Задача восстановления выполнена успешно
+
+ - Проверим наличие данных в таблице
+```
+$ kubectl exec -ti $(kubectl get pods -l app=mysql-instance -o jsonpath='{.items[*].metadata.name}') -- bash
+bash-4.2# mysql -p otus-database
+Enter password:
+Reading table information for completion of table and column names
+You can turn off this feature to get a quicker startup with -A
+
+Welcome to the MySQL monitor.  Commands end with ; or \g.
+Your MySQL connection id is 3
+Server version: 5.7.43 MySQL Community Server (GPL)
+
+Copyright (c) 2000, 2023, Oracle and/or its affiliates.
+
+Oracle is a registered trademark of Oracle Corporation and/or its
+affiliates. Other names may be trademarks of their respective
+owners.
+
+Type 'help;' or '\h' for help. Type '\c' to clear the current input statement.
+
+mysql> show tables;
++-------------------------+
+| Tables_in_otus-database |
++-------------------------+
+| test                    |
++-------------------------+
+1 row in set (0.00 sec)
+
+mysql> select * from test;
++----+-------------+
+| id | name        |
++----+-------------+
+|  1 | some data   |
+|  2 | some data-2 |
+|  3 | 333         |
++----+-------------+
+3 rows in set (0.00 sec)
+```
+
+ - Создадим `Dockerfile`, образ из него и выгрузим в docker hub
+```
+$ docker build --tag hfrog/crd-mysql-controller:0.0.1 .
+[+] Building 1.2s (10/10) FINISHED                                                                                                                     docker:desktop-linux
+...
+$ docker images
+REPOSITORY                   TAG       IMAGE ID       CREATED              SIZE
+hfrog/crd-mysql-controller   0.0.1     52c942827a15   About a minute ago   1.06GB
+$ docker push hfrog/crd-mysql-controller:0.0.1
+The push refers to repository [docker.io/hfrog/crd-mysql-controller]
+...
+0.0.1: digest: sha256:6953e86b92e5719a343f1ebe3eec6721d54eeadc757fddcc149c90df2f0f4146 size: 2635
+```
+
+ - Создадим манифесты для деплоймента контроллера из созданного образа, сервисной учётки, роли и привязки, и применим их
+```
+$ kubectl apply -f service-account.yml
+serviceaccount/mysql-operator created
+$ kubectl apply -f role.yml
+clusterrole.rbac.authorization.k8s.io/mysql-operator created
+$ kubectl apply -f role-binding.yml
+clusterrolebinding.rbac.authorization.k8s.io/workshop-operator created
+$ kubectl apply -f deploy-operator.yml
+deployment.apps/mysql-operator created
+```
+
+ - Снова создадим `mysql-instance`
+```
+$ kubectl apply -f cr.yml
+mysql.otus.homework/mysql-instance created
+```
+
+ - Проверим, что создался том для базы
+```
+$ kubectl get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                               STORAGECLASS     REASON   AGE
+backup-mysql-instance-pv                   2Gi        RWO            Retain           Bound    default/backup-mysql-instance-pvc   yc-network-hdd            3d
+pvc-b020d206-ee54-403a-bd48-961089eb5f62   1Gi        RWO            Delete           Bound    default/mysql-instance-pvc          yc-network-hdd            65s
+$ kubectl get pvc
+NAME                        STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS     AGE
+backup-mysql-instance-pvc   Bound    backup-mysql-instance-pv                   2Gi        RWO            yc-network-hdd   3d
+mysql-instance-pvc          Bound    pvc-b020d206-ee54-403a-bd48-961089eb5f62   1Gi        RWO            yc-network-hdd   77s
+```
+
+ - Подключимся к базе, проверим что в ней есть старые данные и дозапишем новые
+```
+$ kubectl exec -ti $(kubectl get pods -l app=mysql-instance -o jsonpath='{.items[*].metadata.name}') -- bash
+bash-4.2# mysql -p otus-database
+Enter password:
+...
+mysql> select * from test;
++----+-------------+
+| id | name        |
++----+-------------+
+|  1 | some data   |
+|  2 | some data-2 |
+|  3 | 333         |
++----+-------------+
+3 rows in set (0.00 sec)
+
+mysql> INSERT INTO test ( id, name) VALUES ( null, '444' );
+Query OK, 1 row affected (0.00 sec)
+
+mysql> select * from test;
++----+-------------+
+| id | name        |
++----+-------------+
+|  1 | some data   |
+|  2 | some data-2 |
+|  3 | 333         |
+|  4 | 444         |
++----+-------------+
+4 rows in set (0.00 sec)
+```
+
+ - Удалим ресурс MySQL `mysql-instance` и убедимся что том базы исчез
+```
+$ kubectl delete mysql mysql-instance
+mysql.otus.homework "mysql-instance" deleted
+$ kubectl get pv
+NAME                                       CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS     CLAIM                               STORAGECLASS     REASON   AGE
+backup-mysql-instance-pv                   2Gi        RWO            Retain           Bound      default/backup-mysql-instance-pvc   yc-network-hdd            3d
+pvc-b020d206-ee54-403a-bd48-961089eb5f62   1Gi        RWO            Delete           Released   default/mysql-instance-pvc          yc-network-hdd            7m30s
+$ kubectl get pvc
+NAME                        STATUS   VOLUME                     CAPACITY   ACCESS MODES   STORAGECLASS     AGE
+backup-mysql-instance-pvc   Bound    backup-mysql-instance-pv   2Gi        RWO            yc-network-hdd   3d
+```
+Он в состоянии `Released` и пропадёт через минуту или около того
+
+ - И опять создадим `mysql-instance`, дождёмся завершения задачи восстановления, подключимся к базе и посмотрим, есть ли там свежие данные
+```
+$ kubectl apply -f cr.yml
+mysql.otus.homework/mysql-instance created
+$ kubectl get pods
+NAME                               READY   STATUS      RESTARTS   AGE
+backup-mysql-instance-job-b2pgc    0/1     Completed   0          4m41s
+mysql-instance-7c5cf946cb-9mswf    1/1     Running     0          114s
+mysql-operator-7b74c55fcf-gwdfm    1/1     Running     0          14m
+restore-mysql-instance-job-9jb8l   0/1     Completed   3          114s
+$ kubectl exec -ti mysql-instance-7c5cf946cb-9mswf -- bash
+bash-4.2# mysql -p otus-database
+Enter password:
+...
+mysql> select * from test;
++----+-------------+
+| id | name        |
++----+-------------+
+|  1 | some data   |
+|  2 | some data-2 |
+|  3 | 333         |
+|  4 | 444         |
++----+-------------+
+4 rows in set (0.00 sec)
+```
+Всё в норме.
+
+ - Посмотрим список задач
+```
+$ kubectl get jobs
+NAME                         COMPLETIONS   DURATION   AGE
+backup-mysql-instance-job    1/1           17s        8m19s
+restore-mysql-instance-job   1/1           55s        5m31s
+```
+
+## Задание со *
+
+ - Для добавления статуса в CRD добавим `schema.openAPIV3Schema.x-kubernetes-preserve-unknown-fields: true` и `subresources.status: {}` в `.spec.versions[]`:
+```
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+...
+spec:
+...
+  versions:
+...
+    schema:
+      openAPIV3Schema:
+        type: object
+        x-kubernetes-preserve-unknown-fields: true
+...
+    subresources:
+      status: {}
+```
+ Статус будем менять установкой `patch.status['Kopf']` после создания CR, а также по таймеру, опрашивая статусы задач бэкапа и восстановления:
+```
+def mysql_on_create(body, patch, **kwargs):
+...
+  patch.status['Kopf'] = 'Init'
+...
+@kopf.timer('otus.homework', 'v1', 'mysqls', interval=1)
+def get_jobs_status(body, spec, patch, **kwargs):
+    name = body['metadata']['name']
+    if does_job_exist(f'backup-{name}-job') and not is_job_succeeded(f'backup-{name}-job'):
+        patch.status['Kopf'] = 'Doing backup'
+    if does_job_exist(f'restore-{name}-job') and not is_job_succeeded(f'restore-{name}-job'):
+        patch.status['Kopf'] = 'Doing restore'
+    else:
+        patch.status['Kopf'] = 'Ready'
+```
+
+ - Проверим статус в процессе создания CR командой `kubectl describe mysqls mysql-instance | grep -A 5 ^Status`:
+```
+Status:
+  Kopf:  Doing restore
+Events:
+  Type    Reason   Age   From  Message
+  ----    ------   ----  ----  -------
+  Normal  Logging  2s    kopf  Timer 'get_jobs_status' succeeded.
+```
+
+```
+Status:
+  Kopf:  Doing restore
+Events:
+  Type    Reason   Age   From  Message
+  ----    ------   ----  ----  -------
+  Normal  Logging  69s   kopf  Timer 'get_jobs_status' succeeded.
+```
+
+```
+Status:
+  Kopf:  Ready
+Events:
+  Type    Reason   Age   From  Message
+  ----    ------   ----  ----  -------
+  Normal  Logging  72s   kopf  Timer 'get_jobs_status' succeeded.
+
+```
+Стоит отметить, что при удалении статус не выставляется. Есть несколько мест, где бы его можно было выставить, но нигде не работает:
+Функция `delete_object_make_backup` завершается только после удаления CR, а статус выставляется как раз после завершения функции.
+Таймер перестаёт вызываться. Ещё один обработчик `kopf.on.delete` также завершается вместе с удалением CR.
+Скорее все способ есть, просто я не нашёл. Если знаете - скажите)
+
+## Задание со *
+
+ - Реализуем смену пароля в базе при изменении CR, сделаем это через отдельную задачу `change-password-mysql-instance-job`.
+Задача будет запускать команду смена пароля `mysql -u root -h {{ name }} -p{{ old_password }} {{ database }} -e 'set password for \"root\"@\"%\" = \"{{ new_password }}\";'`.
+Также добавим обрабочик изменения пароля в наш оператор:
+```
+@kopf.on.field('otus.homework', 'v1', 'mysqls', field='spec.password')
+def change_password(body, old, new, **kwargs):
+...
+```
+Обработчик удаляет завершённые задачи, создаёт задачу изменения пароля и ждёт её завершения.
+Старый пароль передаётся параметром `old', новый - параметром `new`.
+Также в таймер добавлена установка статуса `Changing password` если задача смены пароля активна.
+
+- Проверим:
+```
+$ kubectl apply -f deploy/cr.yml
+mysql.otus.homework/mysql-instance configured
+[вывод контроллера]
+[2023-10-13 20:40:28,768] kopf.objects         [INFO    ] [default/mysql-instance] Timer 'get_jobs_status' succeeded.
+start deletion
+[2023-10-13 20:40:30,623] kopf.objects         [INFO    ] [default/mysql-instance] Timer 'get_jobs_status' succeeded.
+job with name change-password-mysql-instance-job found, waiting until end
+job with name change-password-mysql-instance-job found, waiting until end
+[2023-10-13 20:40:32,521] kopf.objects         [INFO    ] [default/mysql-instance] Timer 'get_jobs_status' succeeded.
+job with name change-password-mysql-instance-job found, waiting until end
+job with name change-password-mysql-instance-job found, waiting until end
+job with change-password-mysql-instance-job is successful
+[2023-10-13 20:40:34,173] kopf.objects         [INFO    ] [default/mysql-instance] Handler 'change_password/spec.password' succeeded.
+[2023-10-13 20:40:34,173] kopf.objects         [INFO    ] [default/mysql-instance] Updating is processed: 1 succeeded; 0 failed.
+[2023-10-13 20:40:34,241] kopf.objects         [INFO    ] [default/mysql-instance] Timer 'get_jobs_status' succeeded.
+[2023-10-13 20:40:35,939] kopf.objects         [INFO    ] [default/mysql-instance] Timer 'get_jobs_status' succeeded.
+```
+Задача успешно отработала, пароль изменён.
+Также собран и выгружен в Docker hub новый образ с контроллером `hfrog/crd-mysql-controller:0.0.3`
