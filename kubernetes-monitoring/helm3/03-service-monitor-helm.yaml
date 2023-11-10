@@ -1,0 +1,13 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nginx-with-exporter
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: nginx-with-exporter
+  endpoints:
+  - targetPort: 9113
+    path: /metrics

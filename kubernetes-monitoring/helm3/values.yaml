@@ -1,0 +1,22 @@
+# values for kube-prometheus-stack.
+
+prometheus:
+  enabled: true
+  prometheusSpec:
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: yc-network-hdd
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 4Gi
+
+grafana:
+  enabled: true
+  adminPassword: pass
+  persistence:
+    enabled: true
+    storageClassName: yc-network-hdd
+    accessModes: ["ReadWriteOnce"]
+    size: 4Gi
