@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nginx-with-exporter
+  namespace: prometheus
+  labels:
+    otus: homework
+spec:
+  selector:
+    matchLabels:
+      app: nginx-with-exporter
+  namespaceSelector:
+    any: true
+  endpoints:
+  - targetPort: 9113
+    path: /metrics

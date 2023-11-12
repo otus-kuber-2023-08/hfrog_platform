@@ -1,0 +1,27 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-with-exporter
+  labels:
+    app: nginx-with-exporter
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx-with-exporter
+  template:
+    metadata:
+      labels:
+        app: nginx-with-exporter
+    spec:
+      containers:
+      - name: nginx
+        image: hfrog/nginx-with-metrics:1.25.2
+        ports:
+        - containerPort: 80
+      - name: exporter
+        image: nginx/nginx-prometheus-exporter:0.11
+        args:
+        - -nginx.scrape-uri=http://localhost/basic_status
+        ports:
+        - containerPort: 9113

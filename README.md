@@ -3040,3 +3040,171 @@ job with change-password-mysql-instance-job is successful
 ```
 Задача успешно отработала, пароль изменён.
 Также собран и выгружен в Docker hub новый образ с контроллером `hfrog/crd-mysql-controller:0.0.3`
+
+# Выполнено ДЗ №8
+
+ - [*] Основное ДЗ (Can i play, daddy?)
+ - [*] Основное ДЗ (Bring`em on!)
+
+## В процессе сделано:
+
+ - Создан образ nginx, который умеет отдавать статус по пути `/basic_status`.
+   `Dockerfile` и конфиг nginx лежат в директории `build`. Образ выложен в docker hub, называется `hfrog/nginx-with-metrics:1.25.2`.
+
+ - Выполним задание двумя способами, установкой пакета helm и примененением манифестов `prometheus-operator`. Сначала helm. Создадим файл `values.yaml`, в котором
+   включим grafana и настроим её и prometheus на использование постоянных дисков. Также зададим пароль для grafana. Файл лежит в директории `helm3`.
+   Перейдём в эту директорию и установим prometheus в namespace prometheus:
+```
+$ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace=prometheus --create-namespace --values values.yaml --wait
+Release "prometheus" does not exist. Installing it now.
+NAME: prometheus
+LAST DEPLOYED: Fri Nov 10 20:02:50 2023
+NAMESPACE: prometheus
+STATUS: deployed
+REVISION: 1
+NOTES:
+kube-prometheus-stack has been installed. Check its status by running:
+  kubectl --namespace prometheus get pods -l "release=prometheus"
+
+Visit https://github.com/prometheus-operator/kube-prometheus for instructions on how to create & configure Alertmanager and Prometheus instances using the Operator.
+```
+
+ - Напишем манифест для деплоймента `nginx-with-exporter` с двумя контейнерами `nginx` и `exporter`. Если сделать два разных деплоймента,
+   один с nginx и другой с экспортером, то не будет однозначного соответствия между подами exporter и nginx, и потенциально каждый экспортер будет собирать информацию
+   то с одного nginx, то с другого, что вызовет путаницу в метриках. Контейнер `nginx` использует ранее созданный образ и работает на 80-м порту,
+   а контейнер `exporter` использует штатный образ и работает на порту 9113.
+   Файл лежит в `helm3/01-nginx-with-exporter-deployment.yaml`. Применим его как обычно
+```
+$ kubectl apply -f 01-nginx-with-exporter-deployment.yaml
+deployment.apps/nginx-with-exporter created
+```
+
+ - Напишем манифест для сервиса `nginx-with-exporter`, обслуживающий два порта, боевой 80-й и 9113 для метрик.
+   Файл лежит в `helm3/02-nginx-with-exporter-service.yaml`. Применяем.
+```
+$ kubectl apply -f 02-nginx-with-exporter-service.yaml
+service/nginx-with-exporter created
+```
+
+ - Создадим файл с описанием ServiceMonitor, который будет мониторить наш `nginx-with-exporter`. Для того, чтобы prometheus его принял,
+   необходимо добавить метку `release: prometheus`, где `prometheus` это название нашей инсталляции прометея, указанное ранее при запуске helm.
+   Это особенность `kube-prometheus-stack`, она настраивается, но по умолчанию так. Файл лежит в `helm3/03-service-monitor-helm.yaml`. Применяем.
+```
+$ kubectl apply -f 03-service-monitor-helm.yaml
+servicemonitor.monitoring.coreos.com/nginx-with-exporter configured
+```
+
+ - Зайдём в web-интерфейс prometheus по URL http://localhost:9090. Для этого настроим port-forward
+```
+$ kubectl port-forward svc/prometheus-kube-prometheus-prometheus -n prometheus 9090:9090
+Forwarding from 127.0.0.1:9090 -> 9090
+Forwarding from [::1]:9090 -> 9090
+```
+  Страница открывается, в Status/Targets видны наши nginx экспортеры: `serviceMonitor/default/nginx-with-exporter/0 (3/3 up)`.
+  Выполнив `nginx_up` на основной странице, получим список из трёх элементов, соответствующим репликам деплоймента, например
+  `nginx_up{container="exporter", endpoint="9113", instance="172.16.152.58:9113", job="nginx-with-exporter", namespace="default", pod="nginx-with-exporter-7cbbd4445-fbbb5", service="nginx-with-exporter"}`.
+
+ - Зайдём в web-интерфейс grafana по URL http://localhost:3000 c логином `admin` и указанным в `values.yaml` паролем. Для этого также настроим port-forward
+```
+$ kubectl port-forward svc/prometheus-grafana -n prometheus 3000:80
+Forwarding from 127.0.0.1:3000 -> 3000
+Forwarding from [::1]:3000 -> 3000
+```
+  Из коробки в папке General доступно множество системных куберовских досок. Скачаем штатную доску для nginx-exporter отсюда https://grafana.com/grafana/dashboards/12708-nginx/
+  и импортируем её в графану. Доска работает, показывая поды и метрики. Снимок экрана доступен тут https://jmp.sh/s/kkbaE2Zdayq2l21phCep, не знаю сколько он будет храниться.
+
+ - Удалим всё созданное и повторим через `prometheus-operator`.
+
+ - Скачаем https://github.com/prometheus-operator/prometheus-operator/blob/main/bundle.yaml, сохраним в `prometheus-operator/bundle-0.69.yaml`,
+   поменяем в нём namespace с `default` на `prometheus`, создадим namespace `prometheus` и применим файл с манифестами:
+```
+$ kubectl create namespace prometheus
+namespace/prometheus created
+$ kubectl create -f bundle-0.69.yaml
+customresourcedefinition.apiextensions.k8s.io/alertmanagerconfigs.monitoring.coreos.com created
+customresourcedefinition.apiextensions.k8s.io/alertmanagers.monitoring.coreos.com created
+customresourcedefinition.apiextensions.k8s.io/podmonitors.monitoring.coreos.com created
+customresourcedefinition.apiextensions.k8s.io/probes.monitoring.coreos.com created
+customresourcedefinition.apiextensions.k8s.io/prometheusagents.monitoring.coreos.com created
+customresourcedefinition.apiextensions.k8s.io/prometheuses.monitoring.coreos.com created
+customresourcedefinition.apiextensions.k8s.io/prometheusrules.monitoring.coreos.com created
+customresourcedefinition.apiextensions.k8s.io/scrapeconfigs.monitoring.coreos.com created
+customresourcedefinition.apiextensions.k8s.io/servicemonitors.monitoring.coreos.com created
+customresourcedefinition.apiextensions.k8s.io/thanosrulers.monitoring.coreos.com created
+clusterrolebinding.rbac.authorization.k8s.io/prometheus-operator created
+clusterrole.rbac.authorization.k8s.io/prometheus-operator created
+deployment.apps/prometheus-operator created
+serviceaccount/prometheus-operator created
+service/prometheus-operator created
+```
+
+ - Снова применим `01-nginx-with-exporter-deployment.yaml` и `02-nginx-with-exporter-service.yaml`, содержимое то же самое
+```
+$ kubectl apply -f 01-nginx-with-exporter-deployment.yaml
+deployment.apps/nginx-with-exporter created
+$ kubectl apply -f 02-nginx-with-exporter-service.yaml
+service/nginx-with-exporter created
+```
+
+ - Взяв за основу https://github.com/prometheus-operator/prometheus-operator/blob/main/Documentation/user-guides/getting-started.md,
+   напишем манифесты для сервисной учётки и кластерной роли `prometheus`, соответствующей ClusterRoleBinding; затем кастомный ресурс Prometheus,
+   использующий созданную сервисную учётку и фильтром сервисных мониторов по метке `otus: homework`, сервис для него и наконец ServiceMonitor
+   с меткой `otus: homework`, который ищет во всех пространствах имён сервисы с метками `app: nginx-with-exporter`.
+   Всё лежит в директории `prometheus-operator`. Применяем.
+```
+$ kubectl apply -f 03-service-account.yaml
+serviceaccount/prometheus created
+
+$ kubectl apply -f 04-clusterrole.yaml
+clusterrole.rbac.authorization.k8s.io/prometheus created
+
+$ kubectl apply -f 05-clusterrolebinding.yaml
+clusterrolebinding.rbac.authorization.k8s.io/prometheus created
+
+$ kubectl apply -f 06-prometheus-prometheus.yaml
+prometheus.monitoring.coreos.com/prometheus created
+
+$ kubectl apply -f 07-prometheus-service.yaml
+service/prometheus created
+
+$ kubectl apply -f 08-service-monitor.yaml
+servicemonitor.monitoring.coreos.com/nginx-with-exporter created
+```
+
+ - Как и раньше, зайдём в web-интерфейс prometheus
+```
+$ kubectl port-forward svc/prometheus -n prometheus 9090:9090
+Forwarding from 127.0.0.1:9090 -> 9090
+Forwarding from [::1]:9090 -> 9090
+```
+Видим там в Service Discovery `serviceMonitor/prometheus/nginx-with-exporter/0 (3 / 26 active targets)` и в Targets
+`serviceMonitor/prometheus/nginx-with-exporter/0 (3/3 up)`. nginx_up выдаёт
+`nginx_up{container="exporter", endpoint="9113", instance="172.16.152.66:9113", job="nginx-with-exporter", namespace="default", pod="nginx-with-exporter-7cbbd4445-msmfh", service="nginx-with-exporter"}`
+
+ - Но в `prometheus-operator` нет grafana, поэтому скачаем манифесты с https://grafana.com/docs/grafana/latest/setup-grafana/installation/kubernetes/
+  и установим отдельно:
+```
+$ kubectl create namespace grafana
+namespace/grafana created
+$ kubectl apply -f grafana.yaml --namespace=grafana
+persistentvolumeclaim/grafana-pvc created
+deployment.apps/grafana created
+service/grafana created
+```
+
+ - Настроим port-forward и зайдём в grafana по http://localhost:3000
+```
+$ kubectl port-forward svc/grafana -n grafana 3000:3000
+Forwarding from 127.0.0.1:3000 -> 3000
+Forwarding from [::1]:3000 -> 3000
+```
+
+ - Так же, как и раньше, импортируем доску с метриками nginx, но на этот раз нужно настроить источник данных.
+  Укажем URL http://prometheus.prometheus.svc.cluster.local:9090, всё работает.
+  Снимок экрана тут https://jmp.sh/ZDomDqH3.
+
+ - Не понял, как поставить всё руками (уровень I am death incarnate!).
+   Возможно, имеется в виду что-то похожее на https://se7entyse7en.dev/posts/how-to-set-up-kubernetes-service-discovery-in-prometheus/,
+   без CRD и с ручным созданием конфигов. Но думаю хватит, остановлюсь на том что есть)
+
+ - Насчёт названий уровней - это из Wolf 3D, когда-то давно играл в него)
