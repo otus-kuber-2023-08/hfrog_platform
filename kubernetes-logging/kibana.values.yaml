@@ -1,0 +1,8 @@
+image: kibana
+ingress:
+  enabled: true
+  annotations:
+    kubernetes.io/ingress.class: nginx
+  path: /
+  hosts:
+  - kibana.158.160.128.248.hfrog.ru

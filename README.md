@@ -3208,3 +3208,539 @@ Forwarding from [::1]:3000 -> 3000
    без CRD и с ручным созданием конфигов. Но думаю хватит, остановлюсь на том что есть)
 
  - Насчёт названий уровней - это из Wolf 3D, когда-то давно играл в него)
+
+# Выполнено ДЗ №9
+
+ - [*] Основное ДЗ
+
+## В процессе сделано:
+
+ - Изменим настройку пула по умолчанию, задав шаблон для названий нод, и создадим второй пул:
+```
+$ yc managed-kubernetes node-group update node-group-1-default --node-name 'node{instance.index}-default-pool'
+$ yc managed-kubernetes node-group create --cluster-name otus --cores 2 --core-fraction 20 --disk-size 64 --disk-type network-hdd --fixed-size 3 --memory 8 --name node-group-2-infra --container-runtime containerd --preemptible --public-ip --node-name 'node{instance.index}-infra-pool' --node-taints node-role=infra:NoSchedule
+```
+
+ - Проверим состояние нод и taints:
+```
+$ kubectl get nodes -o wide
+NAME                 STATUS   ROLES    AGE     VERSION   INTERNAL-IP   EXTERNAL-IP      OS-IMAGE             KERNEL-VERSION      CONTAINER-RUNTIME
+node3-default-pool   Ready    <none>   12m     v1.27.3   10.129.0.15   51.250.109.231   Ubuntu 20.04.6 LTS   5.4.0-153-generic   containerd://1.6.21
+node4-default-pool   Ready    <none>   177m    v1.27.3   10.129.0.12   158.160.15.116   Ubuntu 20.04.6 LTS   5.4.0-153-generic   containerd://1.6.21
+node4-infra-pool     Ready    <none>   11m     v1.27.3   10.129.0.35   51.250.20.175    Ubuntu 20.04.6 LTS   5.4.0-153-generic   containerd://1.6.21
+node5-infra-pool     Ready    <none>   2m49s   v1.27.3   10.129.0.4    84.252.140.182   Ubuntu 20.04.6 LTS   5.4.0-153-generic   containerd://1.6.21
+node6-infra-pool     Ready    <none>   8m24s   v1.27.3   10.129.0.27   51.250.103.250   Ubuntu 20.04.6 LTS   5.4.0-153-generic   containerd://1.6.21
+$ kubectl describe node node4-infra-pool | grep -A1 -i taint
+Taints:             node-role=infra:NoSchedule
+Unschedulable:      false
+```
+
+ - Скачаем и установим свежий hipster-shop:
+```
+$ curl -O https://raw.githubusercontent.com/GoogleCloudPlatform/microservices-demo/main/release/kubernetes-manifests.yaml
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100 19878  100 19878    0     0   228k      0 --:--:-- --:--:-- --:--:--  245k
+$ kubectl apply -f kubernetes-manifests.yaml -n microservices-demo
+deployment.apps/emailservice created
+service/emailservice created
+deployment.apps/checkoutservice created
+service/checkoutservice created
+deployment.apps/recommendationservice created
+service/recommendationservice created
+deployment.apps/frontend created
+service/frontend created
+service/frontend-external created
+deployment.apps/paymentservice created
+service/paymentservice created
+deployment.apps/productcatalogservice created
+service/productcatalogservice created
+deployment.apps/cartservice created
+service/cartservice created
+deployment.apps/loadgenerator created
+deployment.apps/currencyservice created
+service/currencyservice created
+deployment.apps/shippingservice created
+service/shippingservice created
+deployment.apps/redis-cart created
+service/redis-cart created
+deployment.apps/adservice created
+service/adservice created
+```
+
+ - Проверим где развернулись поды, все в пуле по умолчанию:
+```
+$ kubectl get pods -n microservices-demo -o wide
+NAME                                     READY   STATUS    RESTARTS   AGE    IP              NODE                 NOMINATED NODE   READINESS GATES
+adservice-7986b85799-mc6tg               1/1     Running   0          178m   172.16.142.5    node4-default-pool   <none>           <none>
+cartservice-7d4899b484-j9zhq             1/1     Running   0          178m   172.16.142.6    node4-default-pool   <none>           <none>
+checkoutservice-7dfddf54c7-d4cvw         1/1     Running   0          178m   172.16.142.7    node4-default-pool   <none>           <none>
+currencyservice-67d46ff6d5-8h4zj         1/1     Running   0          178m   172.16.142.8    node4-default-pool   <none>           <none>
+emailservice-6477bdbdf5-fbjzd            1/1     Running   0          178m   172.16.142.9    node4-default-pool   <none>           <none>
+frontend-755cdc7957-7mnb5                1/1     Running   0          16m    172.16.142.12   node4-default-pool   <none>           <none>
+loadgenerator-6b55f6c4c8-ht7p2           1/1     Running   0          16m    172.16.142.15   node4-default-pool   <none>           <none>
+paymentservice-746db6d55-k64pq           1/1     Running   0          178m   172.16.142.11   node4-default-pool   <none>           <none>
+productcatalogservice-764965c957-27dkl   1/1     Running   0          16m    172.16.142.14   node4-default-pool   <none>           <none>
+recommendationservice-7669d8b8dc-swq5g   1/1     Running   0          16m    172.16.142.16   node4-default-pool   <none>           <none>
+redis-cart-76b9545755-mnr7b              1/1     Running   0          16m    172.16.142.13   node4-default-pool   <none>           <none>
+shippingservice-699f4bf479-26kc6         1/1     Running   0          178m   172.16.142.10   node4-default-pool   <none>           <none>
+```
+
+ - Добавим репозиторий `elastic`, создадим пространство имён и попробуем установить elasticsearch:
+```
+$ helm repo add elastic https://helm.elastic.co
+"elastic" has been added to your repositories
+
+$ kubectl create ns observability
+namespace/observability created
+
+$ helm upgrade --install elasticsearch elastic/elasticsearch --namespace observability
+Release "elasticsearch" does not exist. Installing it now.
+Error: failed to fetch https://helm.elastic.co/helm/elasticsearch/elasticsearch-8.5.1.tgz : 403 Forbidden
+```
+Не ставится, доступ заблокирован. Скачаем пакет и установим elasticsearch из локального файла:
+```
+$ helm upgrade --install elasticsearch ./elasticsearch-8.5.1.tgz --namespace observability
+Release "elasticsearch" does not exist. Installing it now.
+NAME: elasticsearch
+LAST DEPLOYED: Sat Nov 11 17:30:29 2023
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 1
+NOTES:
+1. Watch all cluster members come up.
+  $ kubectl get pods --namespace=observability -l app=elasticsearch-master -w
+2. Retrieve elastic user's password.
+  $ kubectl get secrets --namespace=observability elasticsearch-master-credentials -ojsonpath='{.data.password}' | base64 -d
+3. Test cluster health using Helm test.
+  $ helm --namespace=observability test elasticsearch
+```
+Установился успешно.
+
+ - Аналогично скачаем и установим kibana
+```
+$ helm upgrade --install kibana ./kibana-8.5.1.tgz --namespace observability
+Release "kibana" does not exist. Installing it now.
+...
+```
+
+ - Установим fluent-bit
+```
+$ helm upgrade --install fluent-bit stable/fluent-bit --namespace observability
+Release "fluent-bit" does not exist. Installing it now.
+WARNING: This chart is deprecated
+NAME: fluent-bit
+LAST DEPLOYED: Sat Nov 11 17:27:34 2023
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 1
+NOTES:
+fluent-bit is now running.
+
+It will forward all container logs to the svc named fluentd on port: 24284
+```
+Пишет, что `This chart is deprecated`, это действительно старая версия, поэтому старую удалим и поставим новую
+```
+$ helm repo add fluent https://fluent.github.io/helm-charts
+"fluent" has been added to your repositories
+
+$ helm upgrade --install fluent-bit fluent/fluent-bit --namespace observability
+Release "fluent-bit" does not exist. Installing it now.
+NAME: fluent-bit
+LAST DEPLOYED: Sat Nov 11 23:56:03 2023
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 1
+NOTES:
+Get Fluent Bit build information by running these commands:
+...
+```
+
+ - Elasticsearch не запускается, посмотрим почему
+```
+$ kubectl describe pod elasticsearch-master-0 -n observability | tail
+QoS Class:                   Burstable
+Node-Selectors:              <none>
+Tolerations:                 node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                             node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:
+  Type     Reason            Age    From                Message
+  ----     ------            ----   ----                -------
+  Warning  FailedScheduling  6m22s  default-scheduler   0/5 nodes are available: 2 Insufficient cpu, 3 node(s) had untolerated taint {node-role: infra}. preemption: 0/5 nodes are available: 2 No preemption victims found for incoming pod, 3 Preemption is not helpful for scheduling..
+  Warning  FailedScheduling  79s    default-scheduler   0/5 nodes are available: 2 Insufficient cpu, 3 node(s) had untolerated taint {node-role: infra}. preemption: 0/5 nodes are available: 2 No preemption victims found for incoming pod, 3 Preemption is not helpful for scheduling..
+  Normal   TriggeredScaleUp  6m16s  cluster-autoscaler  pod triggered scale-up: [{catg28jubq13ic411e9b 2->5 (max: 10)}]
+```
+На двух нодах пула по умолчанию не хватает CPU, а на трёх нодах пула infra запускаться запрещено из-за taint.
+
+ - Создадим файл elasticsearch.values.yaml, добавим туда tolerations, чтобы игнорировать taint, пароль, также добавим nodeSelector,
+  чтоб запускаться на нодах пула infra. Метки с названием пула на нодах нет, только с ID, поэтому используем его.
+  И забегая вперёд переопределим образ elasticsearch, т.к. образ по умолчанию не скачивается из-за блокировки доступа.
+  Вот что получилось:
+```
+$ cat elasticsearch.values.yaml
+image: elasticsearch
+secret:
+  password: "pass"
+tolerations:
+- key: node-role
+  operator: Equal
+  value: infra
+  effect: NoSchedule
+nodeSelector:
+  yandex.cloud/node-group-id: catqdjfpuj7ben20ohas
+```
+
+ - Обновим эластик:
+```
+$ helm upgrade --install elasticsearch ./elasticsearch-8.5.1.tgz --namespace observability --values elasticsearch.values.yaml
+false
+Release "elasticsearch" has been upgraded. Happy Helming!
+NAME: elasticsearch
+LAST DEPLOYED: Sat Nov 11 17:40:57 2023
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 2
+NOTES:
+1. Watch all cluster members come up.
+  $ kubectl get pods --namespace=observability -l app=elasticsearch-master -w
+2. Retrieve elastic user's password.
+  $ kubectl get secrets --namespace=observability elasticsearch-master-credentials -ojsonpath='{.data.password}' | base64 -d
+3. Test cluster health using Helm test.
+  $ helm --namespace=observability test elasticsearch
+```
+
+ - Проверим:
+```
+$ kubectl get pods -n observability -o wide -l chart=elasticsearch
+NAME                     READY   STATUS    RESTARTS   AGE     IP             NODE               NOMINATED NODE   READINESS GATES
+elasticsearch-master-0   1/1     Running   0          5m33s   172.16.146.3   node5-infra-pool   <none>           <none>
+elasticsearch-master-1   1/1     Running   0          13m     172.16.144.4   node4-infra-pool   <none>           <none>
+elasticsearch-master-2   1/1     Running   0          11m     172.16.145.3   node6-infra-pool   <none>           <none>
+```
+Всё хорошо, поды работают, каждая на своей ноде в пуле infra.
+
+ - Установим ingress-nginx:
+```
+$ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx --wait --namespace=ingress-nginx --create-namespace --values ingress-nginx.values.yaml
+Release "ingress-nginx" does not exist. Installing it now.
+NAME: ingress-nginx
+LAST DEPLOYED: Sat Nov 11 22:11:36 2023
+NAMESPACE: ingress-nginx
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+The ingress-nginx controller has been installed.
+It may take a few minutes for the LoadBalancer IP to be available.
+You can watch the status by running 'kubectl --namespace ingress-nginx get services -o wide -w ingress-nginx-controller'
+
+An example Ingress that makes use of the controller:
+  apiVersion: networking.k8s.io/v1
+  kind: Ingress
+  metadata:
+    name: example
+    namespace: foo
+  spec:
+    ingressClassName: nginx
+    rules:
+      - host: www.example.com
+        http:
+          paths:
+            - pathType: Prefix
+              backend:
+                service:
+                  name: exampleService
+                  port:
+                    number: 80
+              path: /
+    # This section is only required if TLS is to be enabled for the Ingress
+    tls:
+      - hosts:
+        - www.example.com
+        secretName: example-tls
+
+If TLS is enabled for the Ingress, a Secret containing the certificate and key must also be provided:
+
+  apiVersion: v1
+  kind: Secret
+  metadata:
+    name: example-tls
+    namespace: foo
+  data:
+    tls.crt: <base64 encoded cert>
+    tls.key: <base64 encoded key>
+  type: kubernetes.io/tls
+```
+В `ingress-nginx.values.yaml` указаны кол-во реплик 3, tolerations, anti-affinity и nodeSelector.
+
+ - Создадим файл `kibana.values.yaml` со значениями для кибаны, в нём переопределим образ из-за доступа, включим ingress,
+  укажем ingress.class и host. host использую на личном домене. Обновим кибану:
+```
+$ helm upgrade --install kibana ./kibana-8.5.1.tgz --namespace observability --values kibana.values.yaml
+false
+Release "kibana" has been upgraded. Happy Helming!
+NAME: kibana
+LAST DEPLOYED: Sat Nov 11 22:22:28 2023
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 2
+TEST SUITE: None
+NOTES:
+1. Watch all containers come up.
+  $ kubectl get pods --namespace=observability -l release=kibana -w
+2. Retrieve the elastic user's password.
+  $ kubectl get secrets --namespace=observability elasticsearch-master-credentials -ojsonpath='{.data.password}' | base64 -d
+3. Retrieve the kibana service account token.
+  $ kubectl get secrets --namespace=observability kibana-kibana-es-token -ojsonpath='{.data.token}' | base64 -d
+```
+
+ - Зайдём в кибану и увидим, что там нет индексов (data views). Причин несколько, все они на стороне fluent-bit. Не считая версии и отсутствии настройки output es,
+ это: использование http вместо https, проверка сертификата эластика, отсутствие логина/пароля, передача type, что запрещено с 7-й версии эластика, передача точек
+ в названиях полей.
+ Напишем файл `fluent-bit.values.yaml` с правильными значениями, также добавим туда tolerations чтоб fluent-bit запускался на всех нодах, и применим как обычно.
+ Ниже просто для истории некоторые встреченные ошибки
+```
+{"@timestamp":"2023-11-11T20:12:05.012Z", "log.level": "WARN", "message":"received plaintext http traffic on an https channel, closing connection Netty4HttpChannel{localAddress=/172.16.146.3:9200, remoteAddress=/10.129.0.15:50856}", "ecs.version": "1.2.0","service.name":"ES_ECS","event.dataset":"elasticsearch.server","process.thread.name":"elasticsearch[elasticsearch-master-0][transport_worker][T#1]","log.logger":"org.elasticsearch.xpack.security.transport.netty4.SecurityNetty4HttpServerTransport","elasticsearch.cluster.uuid":"dmLAoQ-3Qdy5zejVDdcnNw","elasticsearch.node.id":"vqNkxNwxSOSxra5QLGeuKg","elasticsearch.node.name":"elasticsearch-master-0","elasticsearch.cluster.name":"elasticsearch"}
+
+{"error":{"root_cause":[{"type":"illegal_argument_exception","reason":"Action/metadata line [1] contains an unknown parameter [_type]"}],"type":"illegal_argument_exception","reason":"Action/metadata line [1] contains an unknown parameter [_type]"},"status":400}
+
+{"took":108,"errors":true,"items":[{"create":{"_index":"logstash-2023.11.11","_id":"XO9PwIsBSYCn7ZGO4wgK","status":400,"error":{"type":"mapper_parsing_exception","reason":"object mapping for [kubernetes.labels.app] tried to parse field [app] as object, but found a concrete value"}}},{"create":{"_index":"logstash-2023.11.11","_id":"Xe9PwIsBSYCn7ZGO4wgK","status":400,"error":{"type":"mapper_parsing_exception","reason":"object mapping for [kubernetes.labels.app] tried to parse field [app] as object, but found a concrete value"}}},{"create":{"_index":"logstash-2023.11.11","_id":"Xu9PwIsBSYCn7ZGO4wgK","status":400,"error":{"type":"mapper_parsing_exception","reason":"object mapping for [kubernetes.labels.app] tried to parse field [app] as object, but found a concrete value"}}},{"create":{"_index":"logstash-2023.11.11","_id":"X-9PwIsBSYCn7ZGO4wgK","status":400,"error":{"type":"mapper_parsing_exception","reason":"object mapping for [kubernetes.labels.app] tried to parse field [app] as object, but found a concrete value"}}}]}
+[2023/11/11 21:35:42] [ warn] [engine] failed to flush chunk '1-1699738532.645976786.flb', retry in 12 seconds: task_id=556, input=tail.0 > output=es.0 (out_id=0)
+[2023/11/11 21:35:42] [error] [output:es:es.0] error: Output
+```
+
+ - После обновления fluent-bit индексы в эластике появились. Вот несколько снимков экрана:
+   https://jmp.sh/M1Bok9YL, https://jmp.sh/jLYzLU6B, https://jmp.sh/qG7XNmUo
+
+## Задание со *
+
+ - В логах не вижу ошибок насчёт дублирующихся полей `time` и `timestamp`. Изучив тему и issue, полагаю что наилучшим вариантом будет подход из статьи
+   https://bk0010-01.blogspot.com/2020/03/fluent-bit-and-kibana-in-kubernetes.html, а именно парсить лог и записывать его
+   в отдельный ключ, например `app`. Соответствующие параметры в конфиге fluent-bit это `Merge_Log: On` и `Merge_Log_Key: app`. Вслепую не буду их добавлять)
+
+ - Установим prometheus
+```
+$ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace=observability --values prometheus.values.yaml --wait
+Release "prometheus" does not exist. Installing it now.
+NAME: prometheus
+LAST DEPLOYED: Sun Nov 12 22:35:22 2023
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 1
+NOTES:
+kube-prometheus-stack has been installed. Check its status by running:
+  kubectl --namespace observability get pods -l "release=prometheus"
+
+Visit https://github.com/prometheus-operator/kube-prometheus for instructions on how to create & configure Alertmanager and Prometheus instances using the Operator.
+```
+
+ - Установим свежий elasticsearch-exporter, передав файл `elasticsearch-exporter.values.yaml`, в которм пропишем URL эластика с https и паролем,
+  а также включим ServiceMonitor с нужной меткой релиза.
+```
+$ helm upgrade --install elasticsearch-exporter prometheus-community/prometheus-elasticsearch-exporter --namespace=observability --values elasticsearch-exporter.values.yaml
+false
+Release "elasticsearch-exporter" has been upgraded. Happy Helming!
+NAME: elasticsearch-exporter
+LAST DEPLOYED: Sun Nov 12 23:20:31 2023
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 2
+TEST SUITE: None
+NOTES:
+1. Get the application URL by running these commands:
+  export POD_NAME=$(kubectl get pods --namespace observability -l "app=elasticsearch-exporter-prometheus-elasticsearch-exporter" -o jsonpath="{.items[0].metadata.name}")
+  echo "Visit http://127.0.0.1:9108/metrics to use your application"
+  kubectl port-forward $POD_NAME 9108:9108 --namespace observability
+```
+
+ - Импортируем в графану доску эластика, починим статус, всё работает.
+  ![Страничка импорта доски](https://jmp.sh/odqe6VGG)
+  ![Доска эластика в графане](https://jmp.sh/0qhmoIUg)
+
+ - Эластик в рабочем состянии
+```
+$ kubectl get pods -n observability -l app=elasticsearch-master -o wide
+NAME                     READY   STATUS    RESTARTS       AGE     IP              NODE               NOMINATED NODE   READINESS GATES
+elasticsearch-master-0   1/1     Running   1 (3d4h ago)   3d23h   172.16.146.15   node5-infra-pool   <none>           <none>
+elasticsearch-master-1   1/1     Running   1 (3d4h ago)   4d      172.16.144.16   node4-infra-pool   <none>           <none>
+elasticsearch-master-2   1/1     Running   1 (3d4h ago)   3d23h   172.16.145.16   node6-infra-pool   <none>           <none>
+```
+
+ - расселим `node4-infra-pool`
+```
+$ kubectl drain node4-infra-pool --ignore-daemonsets
+node/node4-infra-pool cordoned
+Warning: ignoring DaemonSet-managed Pods: kube-system/ip-masq-agent-8hbgk, kube-system/kube-proxy-5h6rt, kube-system/npd-v0.8.0-8jnhb, kube-system/yc-disk-csi-node-v2-87d65, observability/fluent-bit-d7x7r, observability/prometheus-prometheus-node-exporter-kbpxs
+evicting pod observability/elasticsearch-master-1
+evicting pod ingress-nginx/ingress-nginx-controller-5c844c8cd5-r66tv
+pod/elasticsearch-master-1 evicted
+pod/ingress-nginx-controller-5c844c8cd5-r66tv evicted
+node/node4-infra-pool drained
+
+$ kubectl get pods -n observability -l app=elasticsearch-master -o wide
+NAME                     READY   STATUS    RESTARTS       AGE     IP              NODE               NOMINATED NODE   READINESS GATES
+elasticsearch-master-0   1/1     Running   1 (3d4h ago)   3d23h   172.16.146.15   node5-infra-pool   <none>           <none>
+elasticsearch-master-1   0/1     Pending   0              37s     <none>          <none>             <none>           <none>
+elasticsearch-master-2   1/1     Running   1 (3d4h ago)   3d23h   172.16.145.16   node6-infra-pool   <none>           <none>
+```
+На доске кол-во узлов эластика уменьшилось до 2
+![grafana-elastic-2-nodes](https://jmp.sh/BV9Swghv)
+
+
+ - Попробуем расселить `node6-infra-pool`, не получается
+```
+$ kubectl drain node6-infra-pool --ignore-daemonsets
+node/node6-infra-pool cordoned
+Warning: ignoring DaemonSet-managed Pods: kube-system/ip-masq-agent-5tl5r, kube-system/kube-proxy-xtx29, kube-system/npd-v0.8.0-qhdm5, kube-system/yc-disk-csi-node-v2-mxbbb, observability/fluent-bit-hggch, observability/prometheus-prometheus-node-exporter-kj9h5
+evicting pod observability/elasticsearch-master-2
+evicting pod ingress-nginx/ingress-nginx-controller-5c844c8cd5-2h5ss
+error when evicting pods/"elasticsearch-master-2" -n "observability" (will retry after 5s): Cannot evict pod as it would violate the pod's disruption budget.
+evicting pod observability/elasticsearch-master-2
+error when evicting pods/"elasticsearch-master-2" -n "observability" (will retry after 5s): Cannot evict pod as it would violate the pod's disruption budget.
+evicting pod observability/elasticsearch-master-2
+error when evicting pods/"elasticsearch-master-2" -n "observability" (will retry after 5s): Cannot evict pod as it would violate the pod's disruption budget.
+pod/ingress-nginx-controller-5c844c8cd5-2h5ss evicted
+evicting pod observability/elasticsearch-master-2
+error when evicting pods/"elasticsearch-master-2" -n "observability" (will retry after 5s): Cannot evict pod as it would violate the pod's disruption budget.
+evicting pod observability/elasticsearch-master-2
+error when evicting pods/"elasticsearch-master-2" -n "observability" (will retry after 5s): Cannot evict pod as it would violate the pod's disruption budget.
+^C
+```
+
+ - Удалим pod `elasticsearch-master-2` ручками
+```
+$ kubectl get pods -n observability -l app=elasticsearch-master -o wide
+NAME                     READY   STATUS    RESTARTS       AGE     IP              NODE               NOMINATED NODE   READINESS GATES
+elasticsearch-master-0   1/1     Running   1 (3d4h ago)   3d23h   172.16.146.15   node5-infra-pool   <none>           <none>
+elasticsearch-master-1   0/1     Pending   0              5m      <none>          <none>             <none>           <none>
+elasticsearch-master-2   0/1     Pending   0              5s      <none>          <none>             <none>           <none>
+```
+Статус в кибане стал недоступен
+![grafana-elastic-1-node](https://jmp.sh/tyGVTgR3)
+
+ - Возвращаем ноды обратно
+```
+$ kubectl uncordon node4-infra-pool
+node/node4-infra-pool uncordoned
+
+$ kubectl uncordon node6-infra-pool
+node/node6-infra-pool uncordoned
+
+$ kubectl get pods -n observability -l app=elasticsearch-master -o wide
+NAME                     READY   STATUS    RESTARTS       AGE     IP              NODE               NOMINATED NODE   READINESS GATES
+elasticsearch-master-0   1/1     Running   1 (3d4h ago)   3d23h   172.16.146.15   node5-infra-pool   <none>           <none>
+elasticsearch-master-1   1/1     Running   0              9m4s    172.16.144.17   node4-infra-pool   <none>           <none>
+elasticsearch-master-2   1/1     Running   0              4m9s    172.16.145.17   node6-infra-pool   <none>           <none>
+```
+
+ - Логи `ingress-nginx` в моём случае есть, они собираются по обычному пути `/var/log/containers/*.log`, поэтому в этом месте ничего не делаю
+ ![kibana-ingress-nginx-logs](https://jmp.sh/9fdOzAQr)
+
+ - Для вывода логов в формате json добавим в конфиг `ingress-nginx` параметры `log-format-escape-json` и `log-format-upstream`
+ ![kibana-ingress-nginx-logs-json](https://jmp.sh/E5rsXiuV)
+
+ - Создадим визуализации запросов к `ingress-nginx`
+ Общее кол-во запросов
+ ![kibana-ingress-nginx-visualize](https://jmp.sh/TC5fcaO5)
+ Доска `ingress-nginx`
+ ![kibana-ingress-nginx-dashboard](https://jmp.sh/WIqLke6Q)
+
+ - Экспортируем доску `ingress-nginx`. В интерфейсе сохранения у меня не видны отдельные визуализации, только вся доска целиком. Версия 8.5.1
+ ![kibana-ingress-nginx-export](https://jmp.sh/Go6w5CTw)
+
+ - Установим Loki и Promtail. В Loki отключим аутентификацию (loki.auth_enabled: false) а также добавим игнорирование на запрет запуска подов
+ в пуле infra для Promtail:
+```
+$ helm repo add grafana https://grafana.github.io/helm-charts
+"grafana" has been added to your repositories
+
+$ helm install loki grafana/loki --namespace observability --values loki.values.yaml
+NAME: loki
+LAST DEPLOYED: Fri Nov 17 20:24:35 2023
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 1
+NOTES:
+***********************************************************************
+ Welcome to Grafana Loki
+ Chart version: 5.36.3
+ Loki version: 2.9.2
+***********************************************************************
+
+Installed components:
+* grafana-agent-operator
+* loki
+
+$ helm upgrade --install promtail grafana/promtail --namespace observability
+Release "promtail" does not exist. Installing it now.
+NAME: promtail
+LAST DEPLOYED: Fri Nov 17 20:37:26 2023
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+***********************************************************************
+ Welcome to Grafana Promtail
+ Chart version: 6.15.3
+ Promtail version: 2.9.2
+***********************************************************************
+
+Verify the application is working by running these commands:
+* kubectl --namespace observability port-forward daemonset/promtail 3101
+* curl http://127.0.0.1:3101/metrics
+```
+
+ - Добавим источник данных Loki в графану следующим блоком в `prometheus.values.yaml` и обновим прометей:
+```
+grafana:
+  additionalDataSources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      maxLines: 1000
+
+$ helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace=observability --values prometheus.values.yaml --wait
+false
+Release "prometheus" has been upgraded. Happy Helming!
+NAME: prometheus
+LAST DEPLOYED: Fri Nov 17 21:04:40 2023
+NAMESPACE: observability
+STATUS: deployed
+REVISION: 3
+NOTES:
+kube-prometheus-stack has been installed. Check its status by running:
+  kubectl --namespace observability get pods -l "release=prometheus"
+
+Visit https://github.com/prometheus-operator/kube-prometheus for instructions on how to create & configure Alertmanager and Prometheus instances using the Operator.
+```
+
+ - Добавим ServiceMonitor в ingress-nginx добавлением блока ниже в `ingress-nginx.values.yaml` и применим как обычно
+```
+controller:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      additionalLabels:
+        release: prometheus
+```
+
+ - Создадим доску c требуемыми визуализациями, экспортируем её и сохраним в `ingress-nginx.json`
+ ![grafana-ingress-nginx-1](https://jmp.sh/HwrxPRG3)
+Я не нашёл, как показывать длинные логи в несколько строк, но думаю что такая возможность должна быть.
+
+ - Создание своего кластера я пропущу для экономии времени)
+
+ - Логи аудита в Яндексе можно включить через `yc managed-kubernetes cluster update --master-logging audit-enabled`.
+   Для включения аудита в self-hosted кластере, нужно создать политику, добавить параметры для kube-apiserver, добавить проброс директорий с файлами
+   политики и логов с хоста внутрь kube-apiserver. Описание https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/.
+   Также нужно будет создать во fluent-bit input и output.
+
+ - Насчёт логов с виртуальных машин мне видится два подхода, один через systemd, второй просто чтением файлов. Первый способ я реализовал,
+   убрав фильтр `Systemd_Filter` в конфигурации input systemd, который по умолчанию оставляет только kubelet. Появились логи ssh, containerd и др.
+   Второй способ не реализовывал, нужно использовать input `tail`, указав путь к файлу с логами, например `/var/log/syslog`. Также потребуется
+   указать `Tag`, `DB`, `Path_Key`, можно `Parser`. И соответствующий указанному тегу output.
+

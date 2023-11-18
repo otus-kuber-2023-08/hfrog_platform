@@ -1,0 +1,29 @@
+# values for kube-prometheus-stack.
+
+prometheus:
+  enabled: true
+  prometheusSpec:
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: yc-network-hdd
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 4Gi
+
+grafana:
+  enabled: true
+  adminPassword: pass
+  additionalDataSources:
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      maxLines: 1000
+  persistence:
+    enabled: true
+    storageClassName: yc-network-hdd
+    accessModes: ["ReadWriteOnce"]
+    size: 4Gi
