@@ -1,0 +1,46 @@
+tolerations:
+- key: node-role
+  operator: Equal
+  value: infra
+  effect: NoSchedule
+
+config:
+  inputs: |
+    [INPUT]
+        Name tail
+        Path /var/log/containers/*.log
+        multiline.parser docker, cri
+        Tag kube.*
+        Mem_Buf_Limit 5MB
+        Skip_Long_Lines On
+
+    [INPUT]
+        Name systemd
+        Tag host.*
+        Read_From_Tail On
+
+  outputs: |
+    [OUTPUT]
+        Name es
+        Match kube.*
+        Host elasticsearch-master
+        Cloud_Auth elastic:pass
+        Logstash_Format On
+        Replace_Dots On
+        Suppress_Type_Name On
+        tls On
+        tls.verify Off
+        Retry_Limit False
+
+    [OUTPUT]
+        Name es
+        Match host.*
+        Host elasticsearch-master
+        Cloud_Auth elastic:pass
+        Logstash_Format On
+        Logstash_Prefix node
+        Replace_Dots On
+        Suppress_Type_Name On
+        tls On
+        tls.verify Off
+        Retry_Limit False

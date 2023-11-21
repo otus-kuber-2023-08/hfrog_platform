@@ -1,0 +1,10 @@
+image: elasticsearch
+secret:
+  password: "pass"
+tolerations:
+- key: node-role
+  operator: Equal
+  value: infra
+  effect: NoSchedule
+nodeSelector:
+  yandex.cloud/node-group-id: catqdjfpuj7ben20ohas

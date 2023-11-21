@@ -1,0 +1,9 @@
+es:
+  uri: https://elastic:pass@elasticsearch-master:9200 
+  cluster_settings: true
+  sslSkipVerify: true
+
+serviceMonitor:
+  enabled: true
+  labels:
+    release: prometheus
