@@ -1,0 +1,40 @@
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: {{ .Values.frontend.name }}
+  namespace: {{.Release.Namespace}}
+spec:
+  provider: istio
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ .Values.frontend.name }}
+  service:
+    port: 80
+    targetPort: 8080
+    gateways:
+    - {{ .Values.frontend.name }}-gateway
+    hosts:
+    - "*"
+    trafficPolicy:
+      tls:
+        mode: DISABLE
+  analysis:
+    interval: 30s
+    threshold: 5
+    maxWeight: 30
+    stepWeight: 5
+    metrics:
+    - name: request-success-rate
+      thresholdRange:
+        min: 99
+      interval: 30s
+    - name: request-duration
+      thresholdRange:
+        max: 1000
+      interval: 30s
+    webhooks:
+      - name: load-test
+        url: http://flagger-loadtester.test/
+        metadata:
+          cmd: "hey -z 1m -q 3 -c 1 http://{{ .Values.frontend.name }}-canary.{{.Release.Namespace}}/"
