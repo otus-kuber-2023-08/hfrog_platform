@@ -3744,3 +3744,528 @@ controller:
    Второй способ не реализовывал, нужно использовать input `tail`, указав путь к файлу с логами, например `/var/log/syslog`. Также потребуется
    указать `Tag`, `DB`, `Path_Key`, можно `Parser`. И соответствующий указанному тегу output.
 
+# Выполнено ДЗ №10
+
+ - [*] Основное ДЗ
+
+## В процессе сделано:
+
+ - Регистрация в gitLab.com из России закрыта, поэтому я поднял свой GitLab в облаке Яндекса и создал там публичный проект
+   https://hfrog.gitlab.yandexcloud.net/aaivanov/microservices-demo. Копирование кода из проекта GCP:
+```
+$ git clone https://github.com/GoogleCloudPlatform/microservices-demo
+Клонирование в «microservices-demo»...
+remote: Enumerating objects: 14343, done.
+remote: Counting objects: 100% (207/207), done.
+remote: Compressing objects: 100% (128/128), done.
+remote: Total 14343 (delta 124), reused 128 (delta 77), pack-reused 14136
+Получение объектов: 100% (14343/14343), 32.92 МиБ | 3.45 МиБ/с, готово.
+Определение изменений: 100% (10919/10919), готово.
+$ cd microservices-demo/
+$ git remote -v
+origin	https://github.com/GoogleCloudPlatform/microservices-demo (fetch)
+origin	https://github.com/GoogleCloudPlatform/microservices-demo (push)
+$ git remote add gitlab git@hfrog.gitlab.yandexcloud.net:aaivanov/microservices-demo.git
+$ git remote remove origin
+$ git remote -v
+gitlab	git@hfrog.gitlab.yandexcloud.net:aaivanov/microservices-demo.git (fetch)
+gitlab	git@hfrog.gitlab.yandexcloud.net:aaivanov/microservices-demo.git (push)
+$ git push gitlab main
+The authenticity of host 'hfrog.gitlab.yandexcloud.net (158.160.133.95)' can't be established.
+ED25519 key fingerprint is SHA256:dXKL8J8arzObXEkUcCQ8g1ZoLSzHp6v0pyACI/tX+/o.
+This key is not known by any other names.
+Are you sure you want to continue connecting (yes/no/[fingerprint])? yes
+Warning: Permanently added 'hfrog.gitlab.yandexcloud.net' (ED25519) to the list of known hosts.
+Перечисление объектов: 13955, готово.
+Подсчет объектов: 100% (13955/13955), готово.
+При сжатии изменений используется до 10 потоков
+Сжатие объектов: 100% (3135/3135), готово.
+Запись объектов: 100% (13955/13955), 32.82 МиБ | 9.31 МиБ/с, готово.
+Всего 13955 (изменений 10646), повторно использовано 13948 (изменений 10643), повторно использовано пакетов 0
+remote: Resolving deltas: 100% (10646/10646), done.
+To hfrog.gitlab.yandexcloud.net:aaivanov/microservices-demo.git
+ * [new branch]      main -> main
+```
+
+ - Я не стал делать helm чарты для всех микросервисов, ограничившись только `frontend`. Его я взял свежий с GitHub.
+   В репозитории с домашним заданием он находится в директории `deploy/charts/frontend', а в репозитории GitLab - в директории `helm-charts/frontend`,
+   т.к. в директории `deploy` будут лежать манифесты.
+
+ - Для выполнения задания используем существующий кластер Kubernetes в Яндекс облаке, создание я не автоматизировал.
+
+ - Для сборки образов всех микросервисов написан `.gitlab-ci.yml`, он находится в репозитории `microservices-demo`.
+   Я не стал разделять стадии сборки и выгрузки образов, чтобы не передавать артефакты между этапами. Они могут быть большими,
+   а в GitLab есть ограничение на размер артефактов. Стадия `build_and_push` использует dind с сервисным образом. Сборка происходит по тегам.
+
+ - Flux v2 установлен по свежей инструкции. Сразу добавим опциональные компоненты `image-reflector-controller` и `image-automation-controller`, они пригодятся
+   для автоматического использования новых образов:
+```
+$ brew install fluxcd/tap/flux
+==> Tapping fluxcd/tap
+...
+$ export GITLAB_TOKEN=$(cat microservices-demo-fluxcd.token)
+$ flux bootstrap gitlab --hostname hfrog.gitlab.yandexcloud.net --owner=aaivanov --repository=microservices-demo --path=deploy --components-extra image-reflector-controller,image-automation-controller --token-auth
+► connecting to https://hfrog.gitlab.yandexcloud.net
+► cloning branch "main" from Git repository "https://hfrog.gitlab.yandexcloud.net/aaivanov/microservices-demo.git"
+✔ cloned repository
+► generating component manifests
+✔ generated component manifests
+✔ committed sync manifests to "main" ("2ceb19352e6fd605b8ed2386a227ece2d8bf685c")
+► pushing component manifests to "https://hfrog.gitlab.yandexcloud.net/aaivanov/microservices-demo.git"
+► installing components in "flux-system" namespace
+✔ installed components
+✔ reconciled components
+► determining if source secret "flux-system/flux-system" exists
+► generating source secret
+► applying source secret "flux-system/flux-system"
+✔ reconciled source secret
+► generating sync manifests
+✔ generated sync manifests
+✔ committed sync manifests to "main" ("17a58d30d67ac9af0371bc1ae3fb6d13e8e69130")
+► pushing sync manifests to "https://hfrog.gitlab.yandexcloud.net/aaivanov/microservices-demo.git"
+► applying sync manifests
+✔ reconciled sync configuration
+◎ waiting for Kustomization "flux-system/flux-system" to be reconciled
+✔ Kustomization reconciled successfully
+► confirming components are healthy
+✔ helm-controller: deployment ready
+✔ image-automation-controller: deployment ready
+✔ image-reflector-controller: deployment ready
+✔ kustomize-controller: deployment ready
+✔ notification-controller: deployment ready
+✔ source-controller: deployment ready
+✔ all components are healthy
+```
+
+ - поместим манифест создания namespace `microservices-demo` в файл `deploy/namespaces/microservices-demo.yaml`,
+   после commit и push namespace создаётся:
+```
+$ cat deploy/namespaces/microservices-demo.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: microservices-demo
+
+$ kubectl get ns
+NAME                 STATUS   AGE
+...
+microservices-demo   Active   114s
+...
+
+$ flux get all -A
+NAMESPACE       NAME                            REVISION                SUSPENDED       READY   MESSAGE
+flux-system     gitrepository/flux-system       main@sha1:17a58d30      False           True    stored artifact for revision 'main@sha1:17a58d30'
+
+NAMESPACE       NAME                            REVISION                SUSPENDED       READY   MESSAGE
+flux-system     kustomization/flux-system       main@sha1:17a58d30      False           True    Applied revision: main@sha1:17a58d30
+
+# события из моего предыдущего эксперимента, в текущем к моменту составления описания события уже пропали, но суть та же
+$ flux events
+...
+19s               	Normal 	NewArtifact               	GitRepository/microservices-demo	stored artifact for commit 'add microservices-demo namespace'
+18s               	Normal 	ReconciliationSucceeded   	Kustomization/microservices-demo	Reconciliation finished in 485.276163ms, next run in 3m0s
+18s               	Normal 	Progressing               	Kustomization/microservices-demo	Health check passed in 59.381508ms
+18s               	Normal 	Progressing               	Kustomization/microservices-demo	Namespace/microservices-demo created
+```
+
+ - Установим доску weave-gitops, https://github.com/weaveworks/weave-gitops. Сначала установим gitops через brew, затем
+   создадим и сохраним в репозитории файл с манифестами создания доски:
+```
+$ gitops create dashboard ww-gitops --password=pass --export > deploy/ww-gitops/dashboard.yaml
+```
+После commit, push и небольшого ожидания либо применения `flux reconcile` у нас есть [web-интерфейс](https://jmp.sh/Y2QP1uIt).
+
+ - Создадим `HelmRelease`:
+```
+$ flux create helmrelease frontend --source=GitRepository/flux-system.flux-system --chart=./helm-charts/frontend --namespace microservices-demo --values frontend.values.yaml --export
+---
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: frontend
+  namespace: microservices-demo
+spec:
+  chart:
+    spec:
+      chart: ./helm-charts/frontend
+      reconcileStrategy: ChartVersion
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+        namespace: flux-system
+  interval: 1m0s
+  values:
+    images:
+      repository: cr.yandex/crpsgjav4a792j80c0iu
+      tag: v0.0.1
+```
+Запишем манифест в файл `deploy/releases/frontend.yaml`, commit, push и проверяем
+```
+$ flux get helmrelease -n microservices-demo
+NAME            REVISION        SUSPENDED       READY   MESSAGE
+frontend        0.8.1           False           True    Release reconciliation succeeded
+
+$ kubectl get helmrelease -n microservices-demo
+NAME       AGE    READY   STATUS
+frontend   100s   True    Release reconciliation succeeded
+
+$ helm list -n microservices-demo
+NAME                            NAMESPACE               REVISION        UPDATED                                 STATUS          CHART           APP VERSION
+microservices-demo-frontend     microservices-demo      1               2023-11-25 14:54:14.674237307 +0000 UTC deployed        frontend-0.8.1  v0.8.1
+```
+
+ - Проставим в репозитории `microservices-demo` тег `v0.0.2`, инициируя сборку новых образов. Образы собрались и появились в Container Registry Яндекса.
+   Кстати, я использовал именно его вместо hub.docker.com, чтобы не утекла моя учётка. 
+   Для того, чтобы `frontend` использовал новый образ, нужно проделать ряд действий, а именно создать несколько кастомных ресурсов и добавить специальный
+   комментарий к HelmRelease. Сначала создаём секрет для скачивания образов. Вообще образы скачиваются и без него, но нам нужен также доступ к просмотру
+   всех тегов, а для этого нужны дополнительные права. Итак, создаём сервисную учётку image-puller, даём ему роль `container-registry.images.puller`,
+   создаём ключ, записываем его в файл и из файла создаём секрет:
+```
+$ kubectl create secret generic cr-yandex-image-puller --from-file=.dockerconfigjson=docker-config.json --type=kubernetes.io/dockerconfigjson --namespace microservices-demo
+secret/cr-yandex-image-puller created
+```
+
+ - Создаём кастомный ресурс `ImageRepository` для фронтенда
+```
+$ flux create image repository yandex-hfrog-frontend --image cr.yandex/crpsgjav4a792j80c0iu/frontend --interval 3m --namespace microservices-demo --secret-ref cr-yandex-image-puller --export > deploy/releases/frontend-image-repository.yaml
+```
+затем commit, push и проверяем
+```
+$ flux get images repository yandex-hfrog-frontend -n microservices-demo
+NAME                    LAST SCAN                       SUSPENDED       READY   MESSAGE
+yandex-hfrog-frontend   2023-11-25T18:27:26+03:00       False           True    successful scan: found 2 tags
+```
+Видно, что он нашёл два тега.
+
+ - Создадим `ImagePolicy` для фронтенда, в этой политике указывается условие поиска образов, в нашем случае это '~v0.0', т.е. фиксируем мажорную и минорные версии по нулям,
+   а последнее число, фикс версия, может меняться. В политике ссылаемся на ранее созданную `ImageRepository`:
+```
+$ flux create image policy frontend-image-policy --image-ref yandex-hfrog-frontend --select-semver '~v0.0' --namespace microservices-demo --export > deploy/releases/frontend-image-policy.yaml
+```
+commit, push и проверяем:
+```
+$ flux get images policy frontend-image-policy -n microservices-demo
+NAME                    LATEST IMAGE                                    READY   MESSAGE
+frontend-image-policy   cr.yandex/crpsgjav4a792j80c0iu/frontend:v0.0.2  True    Latest image tag for 'cr.yandex/crpsgjav4a792j80c0iu/frontend' resolved to v0.0.2
+```
+Политика выдала тег `v0.0.2` для использования.
+
+ - Создаём собственно автоматизатор обновления, который будет коммитить изменения в `HelmRelease`:
+```
+$ flux create image update frontend-image-updater --author-name FluxBot --author-email fluxbot@noreply.ru --git-repo-ref flux-system  --git-repo-namespace flux-system --interval 3m --checkout-branch main --namespace microservices-demo --export > deploy/releases/frontend-image-updater.yaml
+```
+затем commit, push и проверяем:
+```
+$ flux get images update frontend-image-updater -n microservices-demo
+NAME                    LAST RUN                        SUSPENDED       READY   MESSAGE
+frontend-image-updater  2023-11-25T18:36:31+03:00       False           True    no updates made
+```
+Возможно, его стоило создать в namespace `flux-system`, похоже его одного достаточно на все образы, в отличие от `ImageRepository` и `ImagePolicy`.
+
+ - Но этого недостаточно, остался последний шаг - добавить специальный комментарий в `HelmRelease` фронтенда:
+```
+-      tag: v0.0.1
++      tag: v0.0.1 # {"$imagepolicy": "microservices-demo:frontend-image-policy:tag"}
+```
+commit, push и проверяем:
+```
+$ flux get images policy frontend-image-policy -n microservices-demo
+NAME                    LATEST IMAGE                                    READY   MESSAGE
+frontend-image-policy   cr.yandex/crpsgjav4a792j80c0iu/frontend:v0.0.2  True    Latest image tag for 'cr.yandex/crpsgjav4a792j80c0iu/frontend' updated from v0.0.1 to v0.0.2
+```
+Смотрим, что в репозитории появился коммит:
+```
+commit e3468efb0276a44b2185209b0b0c490c1333a859 (HEAD -> main, gitlab/main)
+Author: FluxBot <fluxbot@noreply.ru>
+Date:   Sat Nov 25 15:53:11 2023 +0000
+
+    Update from image update automation
+
+diff --git a/deploy/releases/frontend.yaml b/deploy/releases/frontend.yaml
+index 3f61269..d91da2b 100644
+--- a/deploy/releases/frontend.yaml
++++ b/deploy/releases/frontend.yaml
+@@ -1,4 +1,3 @@
+----
+ apiVersion: helm.toolkit.fluxcd.io/v2beta1
+ kind: HelmRelease
+ metadata:
+@@ -17,4 +16,4 @@ spec:
+   values:
+     images:
+       repository: cr.yandex/crpsgjav4a792j80c0iu
+-      tag: v0.0.1 # {"$imagepolicy": "microservices-demo:frontend-image-policy:tag"}
++      tag: v0.0.2 # {"$imagepolicy": "microservices-demo:frontend-image-policy:tag"}
+```
+Новый образ успешно подхватился.
+
+ - После изменения названия чарта с `frontend` на `frontend-hipster` и версии с 0.8.1 на 0.8.2, обновился helmchart `microservices-demo-frontend`:
+```
+$ flux get sources chart microservices-demo-frontend -n flux-system
+NAME                            REVISION        SUSPENDED       READY   MESSAGE
+microservices-demo-frontend     0.8.2           False           True    packaged 'frontend-hipster' chart with version '0.8.2'
+```
+В логах source-controller появилась строчка
+```
+{"level":"info","ts":"2023-11-25T16:12:44.632Z","msg":"packaged 'frontend-hipster' chart with version '0.8.2'","controller":"helmchart","controllerGroup":"source.toolkit.fluxcd.io","controllerKind":"HelmChart","HelmChart":{"name":"microservices-demo-frontend","namespace":"flux-system"},"namespace":"flux-system","name":"microservices-demo-frontend","reconcileID":"2cefa7c5-acf6-4a40-8b49-6a115c2a1648"}
+```
+В логах helm-controller изменений нет, только обычные дежурные сообщения
+```
+{"level":"info","ts":"2023-11-25T16:12:45.738Z","msg":"reconciliation finished in 1.050075338s, next run in 1m0.494465146s","controller":"helmrelease","controllerGroup":"helm.toolkit.fluxcd.io","controllerKind":"HelmRelease","HelmRelease":{"name":"frontend","namespace":"microservices-demo"},"namespace":"microservices-demo","name":"frontend","reconcileID":"38668850-3687-46bf-9c14-f333e276527b"}
+```
+
+ - Добавил в flux микросервисы `currencyservice`, `productcatalogservice`, `cartservice` и `redis`, чтобы фронтенд не выдавал 500-ю ошибку.
+   Все остальные я не стал затаскивать в flux, для экономии времени. Подход там то же самый.
+
+ - Текущее состояние объектов flux:
+```
+NAMESPACE       NAME                            REVISION                SUSPENDED       READY   MESSAGE
+flux-system     gitrepository/flux-system       main@sha1:746d47f6      False           True    stored artifact for revision 'main@sha1:746d47f6'
+
+NAMESPACE       NAME                            REVISION        SUSPENDED       READY   MESSAGE
+flux-system     helmrepository/ww-gitops                        False           True    Helm repository is ready
+
+NAMESPACE       NAME                                                    REVISION        SUSPENDED       READY   MESSAGE
+flux-system     helmchart/flux-system-ww-gitops                         4.0.35          False           True    pulled 'weave-gitops' chart with version '4.0.35'
+flux-system     helmchart/microservices-demo-cartservice                0.8.1           False           True    packaged 'cartservice' chart with version '0.8.1'
+flux-system     helmchart/microservices-demo-currencyservice            0.8.1           False           True    packaged 'currencyservice' chart with version '0.8.1'
+flux-system     helmchart/microservices-demo-frontend                   0.9.1           False           True    packaged 'frontend' chart with version '0.9.1'
+flux-system     helmchart/microservices-demo-productcatalogservice      0.8.1           False           True    packaged 'productcatalogservice' chart with version '0.8.1'
+flux-system     helmchart/microservices-demo-redis                      0.8.1           False           True    packaged 'redis' chart with version '0.8.1'
+
+NAMESPACE               NAME                                    LAST SCAN                       SUSPENDED       READY   MESSAGE
+microservices-demo      imagerepository/yandex-hfrog-frontend   2023-11-26T12:42:16+03:00       False           True    successful scan: found 3 tags
+
+NAMESPACE               NAME                                    LATEST IMAGE                                    READY   MESSAGE
+microservices-demo      imagepolicy/frontend-image-policy       cr.yandex/crpsgjav4a792j80c0iu/frontend:v0.0.3  True    Latest image tag for 'cr.yandex/crpsgjav4a792j80c0iu/frontend' updated from v0.0.2 to v0.0.3
+
+NAMESPACE               NAME                                            LAST RUN                        SUSPENDED       READY   MESSAGE
+microservices-demo      imageupdateautomation/frontend-image-updater    2023-11-26T12:40:08+03:00       False           True    no updates made; last commit d08983d at 2023-11-26T08:45:13Z
+
+NAMESPACE               NAME                                    REVISION        SUSPENDED       READY   MESSAGE
+flux-system             helmrelease/ww-gitops                   4.0.35          False           True    Release reconciliation succeeded
+microservices-demo      helmrelease/cartservice                 0.8.1           False           True    Release reconciliation succeeded
+microservices-demo      helmrelease/currencyservice             0.8.1           False           True    Release reconciliation succeeded
+microservices-demo      helmrelease/frontend                    0.9.1           False           True    Release reconciliation succeeded
+microservices-demo      helmrelease/productcatalogservice       0.8.1           False           True    Release reconciliation succeeded
+microservices-demo      helmrelease/redis                       0.8.1           False           True    Release reconciliation succeeded
+
+NAMESPACE       NAME                            REVISION                SUSPENDED       READY   MESSAGE
+flux-system     kustomization/flux-system       main@sha1:746d47f6      False           True    Applied revision: main@sha1:746d47f6
+```
+
+ - Хочется отметить, что получившаяся конструкция работает, но сломается при пересоздании из git, т.к. секреты я создавал ручками, и в гите их нет.
+  Для улучшения ситуации можно использовать `sealed-secrets` от `bitnami-labs`, как рекомендуется в [документации flux](https://fluxcd.io/flux/security/secrets-management/).
+
+ - Картинка из доски Weave-gitops, показывает [зависимости фронтенда](https://jmp.sh/F6vg9S2u).
+
+ - Установим istio:
+```
+$ brew install istioctl
+...
+
+$ istioctl install --set profile=demo -y
+✔ Istio core installed
+✔ Istiod installed
+✔ Egress gateways installed
+✔ Ingress gateways installed
+✔ Installation complete
+Made this installation the default for injection and validation.
+```
+
+ - Установка `Istio` через оператор не одобряется разработчиками, пропущу.
+
+ - Установим `Flagger`:
+```
+$ helm repo add flagger https://flagger.app
+"flagger" has been added to your repositories
+
+$ kubectl apply -f https://raw.githubusercontent.com/fluxcd/flagger/main/artifacts/flagger/crd.yaml
+Warning: resource customresourcedefinitions/canaries.flagger.app is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+customresourcedefinition.apiextensions.k8s.io/canaries.flagger.app configured
+Warning: resource customresourcedefinitions/metrictemplates.flagger.app is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+customresourcedefinition.apiextensions.k8s.io/metrictemplates.flagger.app configured
+Warning: resource customresourcedefinitions/alertproviders.flagger.app is missing the kubectl.kubernetes.io/last-applied-configuration annotation which is required by kubectl apply. kubectl apply should only be used on resources created declaratively by either kubectl create --save-config or kubectl apply. The missing annotation will be patched automatically.
+customresourcedefinition.apiextensions.k8s.io/alertproviders.flagger.app configured
+
+$ kubectl apply -f https://raw.githubusercontent.com/fluxcd/flagger/main/artifacts/flagger/crd.yaml
+customresourcedefinition.apiextensions.k8s.io/canaries.flagger.app unchanged
+customresourcedefinition.apiextensions.k8s.io/metrictemplates.flagger.app unchanged
+customresourcedefinition.apiextensions.k8s.io/alertproviders.flagger.app unchanged
+
+$ helm upgrade -i flagger flagger/flagger --namespace=istio-system --set crd.create=false --set meshProvider=istio --set metricsServer=http://prometheus:9090
+Release "flagger" does not exist. Installing it now.
+NAME: flagger
+LAST DEPLOYED: Sat Nov 25 23:36:32 2023
+NAMESPACE: istio-system
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+Flagger installed
+```
+
+ - Добавим в namespace `microservices-demo` метку для `Istio`: `istio-injection: enabled`. Сделаем это через манифест в репозитории:
+```
+$ flux events | tail
+...
+2s                      Normal  Progressing             Kustomization/flux-system               Namespace/microservices-demo configured                                           >
+2s                      Normal  ReconciliationSucceeded Kustomization/flux-system               Reconciliation finished in 1.024988739s, next run in 10m0s                        >
+
+$ kubectl get ns microservices-demo --show-labels
+NAME                 STATUS   AGE     LABELS
+microservices-demo   Active   6h30m   istio-injection=enabled,kubernetes.io/metadata.name=microservices-demo,kustomize.toolkit.fluxcd.io/name=flux-system,kustomize.toolkit.fluxcd.io/namespace=flux-system
+```
+
+ - Удалим поды в namespace `microservices-demo` и проверим что добавился контейнер `istio-proxy` (на тот момент у меня был только фронтенд):
+```
+$ kubectl delete pods --all -n microservices-demo
+pod "frontend-6686db9b66-9plqb" deleted
+$ kubectl get pods -n microservices-demo
+NAME                        READY   STATUS    RESTARTS   AGE
+frontend-6686db9b66-wd98p   2/2     Running   0          75s
+$ kubectl describe pod -l app=frontend -n microservices-demo
+...
+  istio-proxy:
+    Container ID:  containerd://73650aad1deb5880677a63b149d557990c72c0163cc617051387ee4ab59570f3
+    Image:         docker.io/istio/proxyv2:1.20.0
+    Image ID:      docker.io/istio/proxyv2@sha256:19e8ca96e4f46733a3377fa962cb88cad13a35afddb9139ff795e36237327137
+    Port:          15090/TCP
+    Host Port:     0/TCP
+...
+```
+
+ - Добавим файлы с манифестами `Gateway` и `VirtualService` сразу в helm-чарт, вот сюда `helm-charts/frontend/templates/gateway.yaml`,
+ `helm-charts/frontend/templates/virtualservice.yaml` и проверим:
+```
+$ kubectl get gateway -n microservices-demo
+NAME               AGE
+frontend-gateway   25s
+$ kubectl get svc istio-ingressgateway -n istio-system
+NAME                   TYPE           CLUSTER-IP     EXTERNAL-IP       PORT(S)                                                                      AGE
+istio-ingressgateway   LoadBalancer   10.10.10.185   158.160.129.149   15021:32373/TCP,80:30530/TCP,443:32435/TCP,31400:31271/TCP,15443:31638/TCP   10m
+```
+Доступ по http://158.160.129.149 работает.
+
+ - Для метрик, используемых канареечными деплоями, установим `Prometheus`:
+```
+$ kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.20/samples/addons/prometheus.yaml
+serviceaccount/prometheus created
+configmap/prometheus created
+clusterrole.rbac.authorization.k8s.io/prometheus created
+clusterrolebinding.rbac.authorization.k8s.io/prometheus created
+service/prometheus created
+deployment.apps/prometheus created
+```
+
+ - Добавим манифест для Canary в helm-чарт, затем commit, push:
+```
+$ kubectl get canary -n microservices-demo
+NAME       STATUS        WEIGHT   LASTTRANSITIONTIME
+frontend   Initialized   0        2023-11-26T08:32:46Z
+
+$ kubectl get deployment -n microservices-demo | grep frontend
+frontend           0/0     0            0           17h
+frontend-primary   1/1     1            1           8m8s
+
+$ kubectl get pods -n microservices-demo | grep frontend
+frontend-primary-6dddbd98cd-2fpkr   2/2     Running   0          8m21s
+```
+
+ - Соберём новый образ и проверим канареечный деплой:
+```
+$ kubectl describe canary frontend -n microservices-demo | tail -15
+  Last Transition Time:    2023-11-26T08:50:45Z
+  Phase:                   Failed
+  Tracked Configs:
+Events:
+  Type     Reason  Age                    From     Message
+  ----     ------  ----                   ----     -------
+  Warning  Synced  18m                    flagger  frontend-primary.microservices-demo not ready: waiting for rollout to finish: observed deployment generation less than desired generation
+  Normal   Synced  18m (x2 over 18m)      flagger  all the metrics providers are available!
+  Normal   Synced  18m                    flagger  Initialization done! frontend.microservices-demo
+  Normal   Synced  5m14s                  flagger  New revision detected! Scaling up frontend.microservices-demo
+  Normal   Synced  4m44s                  flagger  Starting canary analysis for frontend.microservices-demo
+  Normal   Synced  4m44s                  flagger  Advance frontend.microservices-demo canary weight 5
+  Warning  Synced  2m14s (x5 over 4m14s)  flagger  Halt advancement no values found for istio metric request-success-rate probably frontend.microservices-demo is not receiving traffic: running query failed: no values found
+  Warning  Synced  104s                   flagger  Rolling back frontend.microservices-demo failed checks threshold reached 5
+  Warning  Synced  104s                   flagger  Canary failed! Scaling down frontend.microservices-demo
+```
+Не получилось, т.к. нет трафика.
+
+ - Запустим в цикле раз в секунду `http://158.160.129.149` и попробуем ещё раз, добавив аннотацию `spec.template.metadata.timestamp`
+  в деплоймент `frontend`, прям наживую в кластере, без изменения манифестов, это чтобы автоматика заметила изменение объекта, и проверим:
+```
+$ kubectl describe canary frontend -n microservices-demo | tail -15
+Events:
+  Type     Reason  Age                  From     Message
+  ----     ------  ----                 ----     -------
+  Normal   Synced  6m37s (x2 over 98m)  flagger  New revision detected! Scaling up frontend.microservices-demo
+  Normal   Synced  6m7s (x2 over 98m)   flagger  Starting canary analysis for frontend.microservices-demo
+  Normal   Synced  6m7s (x2 over 98m)   flagger  Advance frontend.microservices-demo canary weight 5
+  Warning  Synced  5m7s (x7 over 97m)   flagger  Halt advancement no values found for istio metric request-success-rate probably frontend.microservices-demo is not receiving traffic: running query failed: no values found
+  Normal   Synced  4m37s                flagger  Advance frontend.microservices-demo canary weight 10
+  Warning  Synced  4m7s                 flagger  Halt advancement no values found for istio metric request-duration probably frontend.microservices-demo is not receiving traffic
+  Normal   Synced  3m37s                flagger  Advance frontend.microservices-demo canary weight 15
+  Normal   Synced  3m7s                 flagger  Advance frontend.microservices-demo canary weight 20
+  Normal   Synced  2m37s                flagger  Advance frontend.microservices-demo canary weight 25
+  Normal   Synced  2m7s                 flagger  Advance frontend.microservices-demo canary weight 30
+  Normal   Synced  97s                  flagger  Copying frontend.microservices-demo template spec to frontend-primary.microservices-demo
+  Normal   Synced  37s (x2 over 67s)    flagger  (combined from similar events): Promotion completed! Scaling down frontend.microservices-demo
+```
+Получилось. 
+
+ - Теперь попробуем без ручной генерации трафика, установим `flagger-loadtester`
+```
+$ helm upgrade --install flagger-loadtester flagger/loadtester --namespace=test --create-namespace --set cmd.timeout=1h --set cmd.namespaceRegexp=''
+Release "flagger-loadtester" does not exist. Installing it now.
+NAME: flagger-loadtester
+LAST DEPLOYED: Sun Nov 26 13:47:41 2023
+NAMESPACE: test
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+NOTES:
+Flagger's load testing service is available at http://flagger-loadtester.test/
+```
+
+ - Добавим webhook и поменяем аннотацию timestamp
+```
+$ kubectl events --for canary/frontend -n microservices-demo --watch
+0s (x4 over 137m)     Normal    Synced   Canary/frontend   New revision detected! Scaling up frontend.microservices-demo
+0s (x4 over 137m)     Normal    Synced   Canary/frontend   Starting canary analysis for frontend.microservices-demo
+0s (x4 over 137m)     Normal    Synced   Canary/frontend   Advance frontend.microservices-demo canary weight 5
+0s (x13 over 137m)    Warning   Synced   Canary/frontend   Halt advancement no values found for istio metric request-success-rate probably frontend.microservices-demo is not receiving traffic: running query failed: no values found
+0s (x2 over 44m)      Normal    Synced   Canary/frontend   Advance frontend.microservices-demo canary weight 10
+0s (x2 over 44m)      Normal    Synced   Canary/frontend   Advance frontend.microservices-demo canary weight 15
+0s (x14 over 138m)    Warning   Synced   Canary/frontend   Halt advancement no values found for istio metric request-success-rate probably frontend.microservices-demo is not receiving traffic: running query failed: no values found
+0s                    Warning   Synced   Canary/frontend   Halt frontend.microservices-demo advancement request duration 634ms > 500ms
+0s (x2 over 45m)      Normal    Synced   Canary/frontend   Advance frontend.microservices-demo canary weight 20
+0s                    Warning   Synced   Canary/frontend   Halt frontend.microservices-demo advancement request duration 630ms > 500ms
+0s (x3 over 139m)     Warning   Synced   Canary/frontend   Rolling back frontend.microservices-demo failed checks threshold reached 5
+```
+Не получилось из-за большого времени ответа.
+
+ - Увеличим request-duration до 750мс и попробуем снова
+```
+0s (x5 over 154m)     Normal    Synced   Canary/frontend   New revision detected! Scaling up frontend.microservices-demo
+0s (x5 over 154m)     Normal    Synced   Canary/frontend   Starting canary analysis for frontend.microservices-demo
+0s                    Warning   Synced   Canary/frontend   Halt frontend.microservices-demo advancement request duration 819ms > 750ms
+```
+Опять не получилось.
+
+ - Увеличим время до 1000мс и уменьшим кол-во запросов тестовой нагрузки до 3 запросов в секунду
+`hey -z 1m -q 3 -c 1 http://{{ .Values.frontend.name }}-canary.{{.Release.Namespace}}/`
+```
+$ kubectl describe canary frontend -n microservices-demo | tail
+...
+  Normal   Synced  8m39s (x6 over 3h1m)  flagger  New revision detected! Scaling up frontend.microservices-demo
+  Normal   Synced  8m9s (x6 over 3h)     flagger  Starting canary analysis for frontend.microservices-demo
+  Normal   Synced  8m9s (x6 over 3h)     flagger  Advance frontend.microservices-demo canary weight 5
+  Normal   Synced  3m39s (x2 over 84m)   flagger  Copying frontend.microservices-demo template spec to frontend-primary.microservices-demo
+$ kubectl get canary frontend -n microservices-demo
+NAME       STATUS      WEIGHT   LASTTRANSITIONTIME
+frontend   Succeeded   0        2023-11-26T11:44:15Z
+```
+На этот раз получилось.
+
