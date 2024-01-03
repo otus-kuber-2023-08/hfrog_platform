@@ -1,0 +1,75 @@
+name: k8s-cluster
+on:
+- workflow_dispatch
+jobs:
+  prepare-vms-for-k8s:
+    runs-on: ubuntu-20.04
+    steps:
+    - uses: actions/checkout@v4
+    - run: scripts/awscli_install.sh
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - run: scripts/prepare_ssh.sh
+      env:
+        SSH_PRIVATE_KEY: |
+          ${{ secrets.SSH_PRIVATE_KEY }}
+    - run: scripts/prepare_vms_for_k8s.sh
+      env:
+        BUCKET: ${{ secrets.BUCKET }}
+        K8S_VERSION: ${{ vars.K8S_VERSION }}
+
+  install-loadbalancer:
+    needs: prepare-vms-for-k8s
+    runs-on: ubuntu-20.04
+    steps:
+    - uses: actions/checkout@v4
+    - run: scripts/awscli_install.sh
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - run: scripts/prepare_ssh.sh
+      env:
+        SSH_PRIVATE_KEY: |
+          ${{ secrets.SSH_PRIVATE_KEY }}
+    - run: scripts/install_haproxy.sh
+      env:
+        BUCKET: ${{ secrets.BUCKET }}
+
+  kubeadm-init:
+    needs:
+    - prepare-vms-for-k8s
+    - install-loadbalancer
+    runs-on: ubuntu-20.04
+    steps:
+    - uses: actions/checkout@v4
+    - run: scripts/awscli_install.sh
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - run: scripts/prepare_ssh.sh
+      env:
+        SSH_PRIVATE_KEY: |
+          ${{ secrets.SSH_PRIVATE_KEY }}
+    - run: scripts/kubeadm_init.sh
+      env:
+        BUCKET: ${{ secrets.BUCKET }}
+
+  kubeadm-join:
+    needs: kubeadm-init
+    runs-on: ubuntu-20.04
+    environment:
+      name: manual
+    steps:
+    - uses: actions/checkout@v4
+    - run: scripts/awscli_install.sh
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - run: scripts/prepare_ssh.sh
+      env:
+        SSH_PRIVATE_KEY: |
+          ${{ secrets.SSH_PRIVATE_KEY }}
+    - run: scripts/kubeadm_join.sh
+      env:
+        BUCKET: ${{ secrets.BUCKET }}
