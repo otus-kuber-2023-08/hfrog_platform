@@ -1,0 +1,49 @@
+name: terraform
+on:
+- workflow_dispatch
+env:
+  YC_CLOUD_ID: ${{ secrets.YC_CLOUD_ID }}
+  YC_FOLDER_ID: ${{ secrets.YC_FOLDER_ID }}
+jobs:
+  plan:
+    runs-on: ubuntu-20.04
+    steps:
+    - uses: actions/checkout@v4
+    - run: scripts/terraform_install.sh
+    - run: scripts/terraform_init.sh
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        BUCKET: ${{ secrets.BUCKET }}
+    - run: scripts/terraform_plan.sh
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        SSH_KEYS: |
+          ${{ secrets.SSH_KEYS }}
+        YC_TOKEN: ${{ secrets.YC_TOKEN }}
+  apply:
+    needs: plan
+    runs-on: ubuntu-20.04
+    environment:
+      name: manual
+    steps:
+    - uses: actions/checkout@v4
+    - run: scripts/awscli_install.sh
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    - run: scripts/terraform_install.sh
+    - run: scripts/terraform_init.sh
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        BUCKET: ${{ secrets.BUCKET }}
+    - run: scripts/terraform_apply.sh
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        BUCKET: ${{ secrets.BUCKET }}
+        SSH_KEYS: |
+          ${{ secrets.SSH_KEYS }}
+        YC_TOKEN: ${{ secrets.YC_TOKEN }}
