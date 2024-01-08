@@ -1,0 +1,44 @@
+server:
+  image:
+    repository: cr.yandex/yc/vault
+    tag: latest
+  volumes:
+  - name: vault-unseal-sa-key
+    secret:
+      secretName: vault-unseal-sa-key
+  volumeMounts:
+  - name: vault-unseal-sa-key
+    readOnly: true
+    mountPath: /tmp/vault-unseal
+  ingress:
+    enabled: true
+    activeService: false
+    ingressClassName: nginx
+    hosts:
+    - host: vault.local
+    tls:
+    - hosts:
+      - vault.local
+  standalone:
+    enabled: false
+  ha:
+    enabled: true
+    config: |
+      ui = true
+
+      listener "tcp" {
+        tls_disable = 1
+        address = "[::]:8200"
+        cluster_address = "[::]:8201"
+      }
+      storage "consul" {
+        path = "vault"
+        address = "consul-server.consul.svc:8500"
+      }
+      seal "yandexcloudkms" {
+        kms_key_id = "abjc2n27l5vpmfqobkh0"
+        service_account_key_file = "/tmp/vault-unseal/vault-unseal-sa-key.json"
+      }
+
+ui:
+  enabled: true
