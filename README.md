@@ -5705,3 +5705,680 @@ MongoServerError: Authentication failed.
 command terminated with exit code 1
 ```
 
+# Выполнено ДЗ №12 (storage)
+
+ - [*] Основное ДЗ
+ - [*] Задание со *
+
+## В процессе сделано:
+
+### Установка и проверка [CSI Hostpath Driver](https://github.com/kubernetes-csi/csi-driver-host-path)
+
+ - Создадим обычный self-hosted кластер с помощью kubeadm, подробности опускаю
+
+ - Будем руководствоваться [инструкцией](https://github.com/kubernetes-csi/csi-driver-host-path/blob/master/docs/deploy-1.17-and-later.md)
+
+ - Установим CRDs из https://github.com/kubernetes-csi/external-snapshotter, файл прилагается:
+```
+$ ./install-crds.sh
+customresourcedefinition.apiextensions.k8s.io/volumesnapshotclasses.snapshot.storage.k8s.io configured
+customresourcedefinition.apiextensions.k8s.io/volumesnapshotcontents.snapshot.storage.k8s.io configured
+customresourcedefinition.apiextensions.k8s.io/volumesnapshots.snapshot.storage.k8s.io configured
+serviceaccount/snapshot-controller created
+clusterrole.rbac.authorization.k8s.io/snapshot-controller-runner configured
+clusterrolebinding.rbac.authorization.k8s.io/snapshot-controller-role configured
+role.rbac.authorization.k8s.io/snapshot-controller-leaderelection created
+rolebinding.rbac.authorization.k8s.io/snapshot-controller-leaderelection created
+deployment.apps/snapshot-controller created
+```
+
+ - Установим сам драйвер
+```
+$ git clone https://github.com/kubernetes-csi/csi-driver-host-path.git
+...
+$ cd csi-driver-host-path/deploy/kubernetes-latest
+$ ./deploy.sh
+applying RBAC rules
+curl https://raw.githubusercontent.com/kubernetes-csi/external-provisioner/v3.6.3/deploy/kubernetes/rbac.yaml --output /tmp/tmp.4wpISxSMzp/rbac.yaml --silent --location
+kubectl apply --kustomize /tmp/tmp.4wpISxSMzp
+serviceaccount/csi-provisioner created
+...
+```
+
+ - Создадим storage class
+```
+$ kubectl apply -f csi-storageclass.yaml
+storageclass.storage.k8s.io/csi-hostpath-sc created
+$ kubectl get storageclass
+NAME              PROVISIONER           RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+csi-hostpath-sc   hostpath.csi.k8s.io   Delete          Immediate           true                   49m
+```
+
+ - Создадим PVC
+```
+$ kubectl apply -f csi-pvc.yaml
+persistentvolumeclaim/storage-pvc created
+$ kubectl get pvc
+NAME          STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      AGE
+storage-pvc   Bound    pvc-7b36eaa9-dc35-4401-860f-55282935f95d   1Gi        RWO            csi-hostpath-sc   48m
+```
+
+ - Создадим pod
+```
+$ kubectl apply -f csi-app.yaml
+pod/storage-pod created
+```
+
+ - Ради интереса посмотрим, куда попадут данные. Запишем их в поде и найдём на файловой системе:
+```
+$ kubectl exec -it storage-pod -- sh -c 'echo privet > /data/qwe'
+
+root@worker-12:/home/ubuntu# mount | grep csi
+/dev/vda2 on /var/lib/kubelet/pods/5cbc7a1c-a8dd-48fc-bf1a-0f874149a797/volumes/kubernetes.io~csi/pvc-7b36eaa9-dc35-4401-860f-55282935f95d/mount type ext4 (rw,relatime,errors=remount-ro)
+
+root@worker-12:/home/ubuntu# ls -la /var/lib/kubelet/pods/5cbc7a1c-a8dd-48fc-bf1a-0f874149a797/volumes/kubernetes.io~csi/pvc-7b36eaa9-dc35-4401-860f-55282935f95d/mount/
+total 12
+drwxr-xr-x 2 root root 4096 Feb  4 19:44 .
+drwxr-x--- 3 root root 4096 Feb  4 19:15 ..
+-rw-r--r-- 1 root root    7 Feb  4 19:44 qwe
+
+root@worker-12:/home/ubuntu# cat /var/lib/kubelet/pods/5cbc7a1c-a8dd-48fc-bf1a-0f874149a797/volumes/kubernetes.io~csi/pvc-7b36eaa9-dc35-4401-860f-55282935f95d/mount/qwe
+privet
+```
+
+## Задание со *
+
+### Установка и проверка работоспособности ISCSI CSI driver for Kubernetes, а также снимков LVM
+
+ - Будем использовать тот же кластер. Я не стал создавать отдельную сеть для iSCSI, т.к. Yandex cloud не позволяет добавлять интерфейсы обычным виртуалкам, а только специально подготовленным. Есть виртуалка с NAT, но там старая версия Ubuntu. Создадим виртуалку, отдельный диск и присоединим его к виртуалке.
+```
+root@iscsi-12:/home/ubuntu# dmesg -T | tail
+...
+[Sun Feb  4 20:17:32 2024] virtio_blk virtio2: [vdb] 10485760 512-byte logical blocks (5.37 GB/5.00 GiB)
+```
+
+ - Установим targetcli-fb и lvm2
+```
+root@iscsi-12:/home/ubuntu# apt-get install -y targetcli-fb lvm2
+...
+```
+
+ - В LVM создадим физический диск, группу томов iscsi и логический том lvol0:
+```
+root@iscsi-12:/home/ubuntu# pvcreate /dev/vdb
+  Physical volume "/dev/vdb" successfully created.
+
+root@iscsi-12:/home/ubuntu# vgcreate iscsi /dev/vdb
+  Volume group "iscsi" successfully created
+
+root@iscsi-12:/home/ubuntu# lvcreate -l100%VG iscsi
+  Logical volume "lvol0" created.
+```
+
+ - Добавим логический том lvol0 в iSCSI по найденной в сети [инструкции Astra linux](https://wiki.astralinux.ru/brest/latest/sozdanie-i-nastrojka-hranilishch-lvm-dlya-testovogo-stenda-263056923.html)
+```
+root@iscsi-12:/home/ubuntu# targetcli
+targetcli shell version 2.1.51
+Copyright 2011-2013 by Datera, Inc and others.
+For help on commands, type 'help'.
+
+/> ls
+o- / ......................................................................................................................... [...]
+  o- backstores .............................................................................................................. [...]
+  | o- block .................................................................................................. [Storage Objects: 0]
+  | o- fileio ................................................................................................. [Storage Objects: 0]
+  | o- pscsi .................................................................................................. [Storage Objects: 0]
+  | o- ramdisk ................................................................................................ [Storage Objects: 0]
+  o- iscsi ............................................................................................................ [Targets: 0]
+  o- loopback ......................................................................................................... [Targets: 0]
+  o- vhost ............................................................................................................ [Targets: 0]
+  o- xen-pvscsi ....................................................................................................... [Targets: 0]
+
+/> /backstores/block create storage01 /dev/iscsi/lvol0
+Created block storage object storage01 using /dev/iscsi/lvol0.
+
+/> ls
+o- / ......................................................................................................................... [...]
+  o- backstores .............................................................................................................. [...]
+  | o- block .................................................................................................. [Storage Objects: 1]
+  | | o- storage01 .............................................................. [/dev/iscsi/lvol0 (5.0GiB) write-thru deactivated]
+  | |   o- alua ................................................................................................... [ALUA Groups: 1]
+  | |     o- default_tg_pt_gp ....................................................................... [ALUA state: Active/optimized]
+  | o- fileio ................................................................................................. [Storage Objects: 0]
+  | o- pscsi .................................................................................................. [Storage Objects: 0]
+  | o- ramdisk ................................................................................................ [Storage Objects: 0]
+  o- iscsi ............................................................................................................ [Targets: 0]
+  o- loopback ......................................................................................................... [Targets: 0]
+  o- vhost ............................................................................................................ [Targets: 0]
+  o- xen-pvscsi ....................................................................................................... [Targets: 0]
+
+/> /iscsi create
+Created target iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592.
+Created TPG 1.
+Global pref auto_add_default_portal=true
+Created default portal listening on all IPs (0.0.0.0), port 3260.
+
+/> ls
+o- / ......................................................................................................................... [...]
+  o- backstores .............................................................................................................. [...]
+  | o- block .................................................................................................. [Storage Objects: 1]
+  | | o- storage01 .............................................................. [/dev/iscsi/lvol0 (5.0GiB) write-thru deactivated]
+  | |   o- alua ................................................................................................... [ALUA Groups: 1]
+  | |     o- default_tg_pt_gp ....................................................................... [ALUA state: Active/optimized]
+  | o- fileio ................................................................................................. [Storage Objects: 0]
+  | o- pscsi .................................................................................................. [Storage Objects: 0]
+  | o- ramdisk ................................................................................................ [Storage Objects: 0]
+  o- iscsi ............................................................................................................ [Targets: 1]
+  | o- iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592 ........................................................ [TPGs: 1]
+  |   o- tpg1 ............................................................................................... [no-gen-acls, no-auth]
+  |     o- acls .......................................................................................................... [ACLs: 0]
+  |     o- luns .......................................................................................................... [LUNs: 0]
+  |     o- portals .................................................................................................... [Portals: 1]
+  |       o- 0.0.0.0:3260 ..................................................................................................... [OK]
+  o- loopback ......................................................................................................... [Targets: 0]
+  o- vhost ............................................................................................................ [Targets: 0]
+  o- xen-pvscsi ....................................................................................................... [Targets: 0]
+
+/> /iscsi/iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592/tpg1/luns/ create /backstores/block/storage01
+Created LUN 0.
+
+/> ls
+o- / ......................................................................................................................... [...]
+  o- backstores .............................................................................................................. [...]
+  | o- block .................................................................................................. [Storage Objects: 1]
+  | | o- storage01 ................................................................ [/dev/iscsi/lvol0 (5.0GiB) write-thru activated]
+  | |   o- alua ................................................................................................... [ALUA Groups: 1]
+  | |     o- default_tg_pt_gp ....................................................................... [ALUA state: Active/optimized]
+  | o- fileio ................................................................................................. [Storage Objects: 0]
+  | o- pscsi .................................................................................................. [Storage Objects: 0]
+  | o- ramdisk ................................................................................................ [Storage Objects: 0]
+  o- iscsi ............................................................................................................ [Targets: 1]
+  | o- iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592 ........................................................ [TPGs: 1]
+  |   o- tpg1 ............................................................................................... [no-gen-acls, no-auth]
+  |     o- acls .......................................................................................................... [ACLs: 0]
+  |     o- luns .......................................................................................................... [LUNs: 1]
+  |     | o- lun0 .......................................................... [block/storage01 (/dev/iscsi/lvol0) (default_tg_pt_gp)]
+  |     o- portals .................................................................................................... [Portals: 1]
+  |       o- 0.0.0.0:3260 ..................................................................................................... [OK]
+  o- loopback ......................................................................................................... [Targets: 0]
+  o- vhost ............................................................................................................ [Targets: 0]
+  o- xen-pvscsi ....................................................................................................... [Targets: 0]
+```
+
+ - Установим iSCSI CSI driver по [инструкции](https://github.com/kubernetes-csi/csi-driver-iscsi/blob/master/docs/install-csi-driver-master.md)
+```
+root@master-12:/home/ubuntu# curl -skSLO https://raw.githubusercontent.com/kubernetes-csi/csi-driver-iscsi/master/deploy/install-driver.sh
+
+root@master-12:/home/ubuntu# cat install-driver.sh | bash -s master
+Installing iscsi.csi.k8s.io CSI driver, version: master ...
+csidriver.storage.k8s.io/iscsi.csi.k8s.io created
+daemonset.apps/csi-iscsi-node created
+configmap/configmap-csi-iscsiadm created
+iscsi.csi.k8s.io CSI driver installed successfully.
+```
+
+ - Убедимся в том, что драйвер установлен:
+```
+$ kubectl get csidriver
+NAME                  ATTACHREQUIRED   PODINFOONMOUNT   STORAGECAPACITY   TOKENREQUESTS   REQUIRESREPUBLISH   MODES                  AGE
+hostpath.csi.k8s.io   true             true             false             <unset>         false               Persistent,Ephemeral   129m
+iscsi.csi.k8s.io      false            false            false             <unset>         false               Persistent,Ephemeral   7m53s
+```
+
+ - Создадим использующий его storage class
+```
+root@master-12:/home/ubuntu# cat iscsi-storageclass.yaml
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: csi-iscsi
+provisioner: iscsi.csi.k8s.io
+
+$ kubectl apply -f iscsi-storageclass.yaml
+storageclass.storage.k8s.io/csi-iscsi created
+```
+
+ - Создадим статический том, указав в манифесте помимо названия драйвера и свойств тома IP адрес виртуалки с iSCSI и полученный ранее в targetcli IQN (iSCSI Qualified Name)
+```
+root@master-12:/home/ubuntu# cat iscsi-pv.yaml
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: iscsi-pv
+  labels:
+    name: data-iscsi
+spec:
+  storageClassName: csi-iscsi
+  accessModes:
+    - ReadWriteOnce
+  capacity:
+    storage: 1Gi
+  csi:
+    driver: iscsi.csi.k8s.io
+    volumeHandle: iscsi-data-id
+    volumeAttributes:
+      targetPortal: "172.16.0.35:3260"
+      portals: "[]"
+      iqn: "iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592"
+      lun: "0"
+      iscsiInterface: "default"
+      discoveryCHAPAuth: "true"
+      sessionCHAPAuth: "false"
+
+$ kubectl apply -f iscsi-pv.yaml
+persistentvolume/iscsi-pv created
+```
+
+ - Создадим заявку на том
+```
+root@master-12:/home/ubuntu# cat iscsi-pvc.yaml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: iscsi-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: csi-iscsi
+  selector:
+    matchExpressions:
+      - key: name
+        operator: In
+        values: ["data-iscsi"]
+
+$ kubectl apply -f iscsi-pvc.yaml
+persistentvolumeclaim/iscsi-pvc created
+
+$ kubectl get pvc
+NAME          STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS      AGE
+iscsi-pvc     Bound    iscsi-pv                                   1Gi        RWO            csi-iscsi         22s
+storage-pvc   Bound    pvc-7b36eaa9-dc35-4401-860f-55282935f95d   1Gi        RWO            csi-hostpath-sc   117m
+```
+
+ - Создадим pod, использующий том. Это будет nginx
+```
+root@master-12:/home/ubuntu# cat iscsi-pod.yaml
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: iscsi-nginx
+spec:
+  containers:
+  - image: nginx
+    name: nginx
+    volumeMounts:
+    - mountPath: /var/www
+      name: iscsi-volume
+  volumes:
+  - name: iscsi-volume
+    persistentVolumeClaim:
+      claimName: iscsi-pvc
+
+$ kubectl apply -f iscsi-pod.yaml
+pod/iscsi-nginx created
+```
+
+ - Pod не стартует, посмотрим почему
+```
+$ kubectl describe pod iscsi-nginx
+...
+Events:
+  Type     Reason       Age                   From               Message
+  ----     ------       ----                  ----               -------
+  Normal   Scheduled    5m22s                 default-scheduler  Successfully assigned default/iscsi-nginx to worker-12
+  Warning  FailedMount  71s (x10 over 5m22s)  kubelet            MountVolume.SetUp failed for volume "iscsi-pv" : rpc error: code = Internal desc = exit status 127
+```
+
+ - Нужно установить open-iscsi (логи csi-iscsi-node-xxx не сохранились)
+```
+root@worker-12:/home/ubuntu# apt-get install -y open-iscsi
+...
+```
+
+ - Посмотрим снова статус пода и логи на виртуалке с iSCSI
+```
+$ kubectl describe pod iscsi-nginx
+...
+Events:
+  Type     Reason       Age                   From               Message
+  ----     ------       ----                  ----               -------
+  Normal   Scheduled    14m                   default-scheduler  Successfully assigned default/iscsi-nginx to worker-12
+  Warning  FailedMount  4m18s (x13 over 14m)  kubelet            MountVolume.SetUp failed for volume "iscsi-pv" : rpc error: code = Internal desc = exit status 127
+  Warning  FailedMount  12s (x2 over 2m15s)   kubelet            MountVolume.SetUp failed for volume "iscsi-pv" : rpc error: code = Internal desc = failed to find device path: [], last error seen: failed to sendtargets to portal 172.16.0.35:3260, err: exit status 24
+
+root@iscsi-12:/home/ubuntu# dmesg -T | tail
+...
+[Sun Feb  4 21:23:48 2024] iSCSI Initiator Node: iqn.1993-08.org.debian:01:239cc8b88e59 is not authorized to access iSCSI target portal group: 1.
+[Sun Feb  4 21:23:48 2024] iSCSI Login negotiation failed.
+```
+
+ - Нужно дать права виртуалке, на которой работает pod. Узнаем InitiatorName и пропишем его в iSCSI:
+```
+root@worker-12:/home/ubuntu# cat /etc/iscsi/initiatorname.iscsi
+## DO NOT EDIT OR REMOVE THIS FILE!
+## If you remove this file, the iSCSI daemon will not start.
+## If you change the InitiatorName, existing access control lists
+## may reject this initiator.  The InitiatorName must be unique
+## for each iSCSI initiator.  Do NOT duplicate iSCSI InitiatorNames.
+InitiatorName=iqn.1993-08.org.debian:01:239cc8b88e59
+
+root@iscsi-12:/home/ubuntu# targetcli
+targetcli shell version 2.1.51
+Copyright 2011-2013 by Datera, Inc and others.
+For help on commands, type 'help'.
+
+/> /iscsi/iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592/tpg1/acls/ create iqn.1993-08.org.debian:01:239cc8b88e59
+Created Node ACL for iqn.1993-08.org.debian:01:239cc8b88e59
+Created mapped LUN 0.
+
+/> ls
+o- / ......................................................................................................................... [...]
+  o- backstores .............................................................................................................. [...]
+  | o- block .................................................................................................. [Storage Objects: 1]
+  | | o- storage01 ................................................................ [/dev/iscsi/lvol0 (5.0GiB) write-thru activated]
+  | |   o- alua ................................................................................................... [ALUA Groups: 1]
+  | |     o- default_tg_pt_gp ....................................................................... [ALUA state: Active/optimized]
+  | o- fileio ................................................................................................. [Storage Objects: 0]
+  | o- pscsi .................................................................................................. [Storage Objects: 0]
+  | o- ramdisk ................................................................................................ [Storage Objects: 0]
+  o- iscsi ............................................................................................................ [Targets: 1]
+  | o- iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592 ........................................................ [TPGs: 1]
+  |   o- tpg1 ............................................................................................... [no-gen-acls, no-auth]
+  |     o- acls .......................................................................................................... [ACLs: 1]
+  |     | o- iqn.1993-08.org.debian:01:239cc8b88e59 ............................................................... [Mapped LUNs: 1]
+  |     |   o- mapped_lun0 ............................................................................. [lun0 block/storage01 (rw)]
+  |     o- luns .......................................................................................................... [LUNs: 1]
+  |     | o- lun0 .......................................................... [block/storage01 (/dev/iscsi/lvol0) (default_tg_pt_gp)]
+  |     o- portals .................................................................................................... [Portals: 1]
+  |       o- 0.0.0.0:3260 ..................................................................................................... [OK]
+  o- loopback ......................................................................................................... [Targets: 0]
+  o- vhost ............................................................................................................ [Targets: 0]
+  o- xen-pvscsi ....................................................................................................... [Targets: 0]
+```
+
+ - Снова посмотрим логи на виртуалке с iSCSI, уже лучше:
+```
+root@iscsi-12:/home/ubuntu# dmesg -T | tail
+...
+[Sun Feb  4 21:31:57 2024] iSCSI/iqn.1993-08.org.debian:01:239cc8b88e59: Unsupported SCSI Opcode 0xa3, sending CHECK_CONDITION.
+```
+
+ - Теперь том смонтирован в поде с nginx:
+```
+$ kubectl exec -it iscsi-nginx -- df -h
+Filesystem      Size  Used Avail Use% Mounted on
+overlay          20G  5.8G   13G  31% /
+tmpfs            64M     0   64M   0% /dev
+tmpfs           3.9G     0  3.9G   0% /sys/fs/cgroup
+/dev/sda        4.9G   24K  4.9G   1% /var/www
+/dev/vda2        20G  5.8G   13G  31% /etc/hosts
+shm              64M     0   64M   0% /dev/shm
+tmpfs           7.7G   12K  7.7G   1% /run/secrets/kubernetes.io/serviceaccount
+tmpfs           3.9G     0  3.9G   0% /proc/acpi
+tmpfs           3.9G     0  3.9G   0% /proc/scsi
+tmpfs           3.9G     0  3.9G   0% /sys/firmware
+
+$ kubectl exec -it iscsi-nginx -- ls -la /var/www
+total 28
+drwxr-xr-x 3 root root  4096 Feb  4 21:31 .
+drwxr-xr-x 1 root root  4096 Feb  4 21:32 ..
+drwx------ 2 root root 16384 Feb  4 21:31 lost+found
+```
+
+ - Создадим файл index.html и проверим его curl'ом
+```
+$ kubectl exec -it iscsi-nginx -- sh -c 'echo privet > /var/www/index.html'
+```
+
+ - Nginx не видит файл, т.к. использует другую директорию, `/usr/share/nginx/html`. Поменяем манифест и применим снова. После этого запрос curl'ом показывает новый файл:
+```
+$ kubectl apply -f iscsi-pod.yaml --force
+pod/iscsi-nginx configured
+
+$ kubectl get pods -o wide | grep nginx
+iscsi-nginx             1/1     Running   0              44s    10.0.1.215   worker-12   <none>           <none>
+
+root@master-12:/home/ubuntu# curl -s 10.0.1.215
+privet
+```
+
+ - Создадим снимок логического тома lvol0:
+```
+root@iscsi-12:/home/ubuntu# lvcreate -L 5G -s -n lvol0-snap /dev/mapper/iscsi-lvol0
+  Volume group "iscsi" has insufficient free space (0 extents): 1280 required.
+```
+Нет места в группе томов iscsi.
+```
+root@iscsi-12:/home/ubuntu# vgs
+  VG    #PV #LV #SN Attr   VSize  VFree
+  iscsi   1   1   0 wz--n- <5.00g    0
+```
+
+ - Увеличим размер диска в консоли Yandex cloud до 10ГБ
+```
+root@iscsi-12:/home/ubuntu# dmesg -T | tail
+...
+[Sat Feb 10 12:10:40 2024] virtio_blk virtio2: [vdb] new size: 20971520 512-byte logical blocks (10.7 GB/10.0 GiB)
+[Sat Feb 10 12:10:40 2024] vdb: detected capacity change from 5368709120 to 10737418240
+```
+Диск расширен, vdb стал 10ГБ:
+```
+root@iscsi-12:/home/ubuntu# lsblk
+NAME          MAJ:MIN RM SIZE RO TYPE MOUNTPOINT
+vda           252:0    0  15G  0 disk
+├─vda1        252:1    0   1M  0 part
+└─vda2        252:2    0  15G  0 part /
+vdb           252:16   0  10G  0 disk
+└─iscsi-lvol0 253:0    0   5G  0 lvm
+```
+
+ - Но группа томов iscsi по прежнему 5ГБ, расширим и её
+```
+root@iscsi-12:/home/ubuntu# pvdisplay
+  --- Physical volume ---
+  PV Name               /dev/vdb
+  VG Name               iscsi
+  PV Size               5.00 GiB / not usable 4.00 MiB
+  Allocatable           yes (but full)
+  PE Size               4.00 MiB
+  Total PE              1279
+  Free PE               0
+  Allocated PE          1279
+  PV UUID               nzBVwR-zfm2-7qxu-SBA6-P3T4-wJda-DOBHcs
+
+root@iscsi-12:/home/ubuntu# pvresize /dev/vdb
+  Physical volume "/dev/vdb" changed
+  1 physical volume(s) resized or updated / 0 physical volume(s) not resized
+
+root@iscsi-12:/home/ubuntu# pvdisplay
+  --- Physical volume ---
+  PV Name               /dev/vdb
+  VG Name               iscsi
+  PV Size               <10.00 GiB / not usable 3.00 MiB
+  Allocatable           yes
+  PE Size               4.00 MiB
+  Total PE              2559
+  Free PE               1280
+  Allocated PE          1279
+  PV UUID               nzBVwR-zfm2-7qxu-SBA6-P3T4-wJda-DOBHcs
+
+root@iscsi-12:/home/ubuntu# vgs
+  VG    #PV #LV #SN Attr   VSize   VFree
+  iscsi   1   1   0 wz--n- <10.00g 5.00g
+```
+
+ - Теперь снова пробуем создать снимок
+```
+root@iscsi-12:/home/ubuntu# lvcreate -L 5G -s -n lvol0-snap /dev/mapper/iscsi-lvol0
+  Logical volume "lvol0-snap" created.
+
+root@iscsi-12:/home/ubuntu# lvs
+  LV         VG    Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lvol0      iscsi owi-aos--- <5.00g
+  lvol0-snap iscsi swi-a-s---  5.00g      lvol0  0.00
+```
+Успешно
+
+ - Изменим файлы: удалим старый `index.html` и создадим `new_file.txt`
+```
+$ kubectl exec -it iscsi-nginx -- sh -c 'cd /usr/share/nginx/html; rm index.html; echo new > new_file.txt; ls -la'
+total 28
+drwxr-xr-x 3 root root  4096 Feb 10 12:20 .
+drwxr-xr-x 3 root root  4096 Jan 31 23:54 ..
+drwx------ 2 root root 16384 Feb  4 21:31 lost+found
+-rw-r--r-- 1 root root     4 Feb 10 12:20 new_file.txt
+```
+
+ - Удалим pod, pvc и pv
+```
+$ kubectl delete pod iscsi-nginx
+pod "iscsi-nginx" deleted
+
+$ kubectl delete pvc iscsi-pvc
+persistentvolumeclaim "iscsi-pvc" deleted
+
+$ kubectl delete pv iscsi-pv
+persistentvolume "iscsi-pv" deleted
+```
+
+ - Удалим том из iSCSI
+```
+root@iscsi-12:/home/ubuntu# targetcli
+targetcli shell version 2.1.51
+Copyright 2011-2013 by Datera, Inc and others.
+For help on commands, type 'help'.
+
+/> /iscsi delete iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592
+Deleted Target iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592.
+
+/> /backstores/block delete storage01
+Deleted storage object storage01.
+
+/> ls
+o- / ......................................................................................................................... [...]
+  o- backstores .............................................................................................................. [...]
+  | o- block .................................................................................................. [Storage Objects: 0]
+  | o- fileio ................................................................................................. [Storage Objects: 0]
+  | o- pscsi .................................................................................................. [Storage Objects: 0]
+  | o- ramdisk ................................................................................................ [Storage Objects: 0]
+  o- iscsi ............................................................................................................ [Targets: 0]
+  o- loopback ......................................................................................................... [Targets: 0]
+  o- vhost ............................................................................................................ [Targets: 0]
+  o- xen-pvscsi ....................................................................................................... [Targets: 0]
+```
+
+ - Сольём снимок и том:
+```
+root@iscsi-12:/home/ubuntu# lvconvert --merge /dev/iscsi/lvol0-snap
+  Merging of volume iscsi/lvol0-snap started.
+  iscsi/lvol0: Merged: 100.00%
+```
+
+ - После слияния снимок пропал:
+```
+root@iscsi-12:/home/ubuntu# lvs
+  LV    VG    Attr       LSize  Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  lvol0 iscsi -wi-a----- <5.00g
+```
+
+ - Снова добавим логический том lvol0 в iSCSI
+```
+root@iscsi-12:/home/ubuntu# targetcli
+targetcli shell version 2.1.51
+Copyright 2011-2013 by Datera, Inc and others.
+For help on commands, type 'help'.
+
+/> /backstores/block create storage01 /dev/iscsi/lvol0
+Created block storage object storage01 using /dev/iscsi/lvol0.
+
+/> /iscsi create
+Created target iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.5e212abf5d26.
+Created TPG 1.
+Global pref auto_add_default_portal=true
+Created default portal listening on all IPs (0.0.0.0), port 3260.
+
+/> /iscsi/iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.5e212abf5d26/tpg1/luns create /backstores/block/storage01
+Created LUN 0.
+
+/> iscsi/iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.5e212abf5d26/tpg1/acls create iqn.1993-08.org.debian:01:239cc8b88e59
+Created Node ACL for iqn.1993-08.org.debian:01:239cc8b88e59
+Created mapped LUN 0.
+
+/> ls
+o- / ......................................................................................................................... [...]
+  o- backstores .............................................................................................................. [...]
+  | o- block .................................................................................................. [Storage Objects: 1]
+  | | o- storage01 ................................................................ [/dev/iscsi/lvol0 (5.0GiB) write-thru activated]
+  | |   o- alua ................................................................................................... [ALUA Groups: 1]
+  | |     o- default_tg_pt_gp ....................................................................... [ALUA state: Active/optimized]
+  | o- fileio ................................................................................................. [Storage Objects: 0]
+  | o- pscsi .................................................................................................. [Storage Objects: 0]
+  | o- ramdisk ................................................................................................ [Storage Objects: 0]
+  o- iscsi ............................................................................................................ [Targets: 1]
+  | o- iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.5e212abf5d26 ........................................................ [TPGs: 1]
+  |   o- tpg1 ............................................................................................... [no-gen-acls, no-auth]
+  |     o- acls .......................................................................................................... [ACLs: 1]
+  |     | o- iqn.1993-08.org.debian:01:239cc8b88e59 ............................................................... [Mapped LUNs: 1]
+  |     |   o- mapped_lun0 ............................................................................. [lun0 block/storage01 (rw)]
+  |     o- luns .......................................................................................................... [LUNs: 1]
+  |     | o- lun0 .......................................................... [block/storage01 (/dev/iscsi/lvol0) (default_tg_pt_gp)]
+  |     o- portals .................................................................................................... [Portals: 1]
+  |       o- 0.0.0.0:3260 ..................................................................................................... [OK]
+  o- loopback ......................................................................................................... [Targets: 0]
+  o- vhost ............................................................................................................ [Targets: 0]
+  o- xen-pvscsi ....................................................................................................... [Targets: 0]
+```
+
+ - Заменим в iscsi-pv.yaml IQN на новый `iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.5e212abf5d26`
+```
+$ kubectl apply -f iscsi-pv.yaml
+persistentvolume/iscsi-pv created
+
+$ kubectl apply -f iscsi-pvc.yaml
+persistentvolumeclaim/iscsi-pvc created
+
+$ kubectl apply -f iscsi-pod.yaml
+pod/iscsi-nginx created
+```
+
+ - Pod не стартует. Смотрим логи iSCSI:
+```
+root@iscsi-12:/home/ubuntu# dmesg -T | tail
+...
+[Sat Feb 10 13:21:54 2024] Unable to locate Target IQN: iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592 in Storage Node
+[Sat Feb 10 13:21:54 2024] iSCSI Login negotiation failed.
+```
+
+ - Идут обращения со старым IQN. Гугл говорит что надо разлогиниться. Последуем совету
+```
+root@worker-12:/home/ubuntu# iscsiadm -m session
+tcp: [1] 172.16.0.35:3260,1 iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592 (non-flash)
+
+root@worker-12:/home/ubuntu# iscsiadm --mode node --targetname iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592 --portal 172.16.0.35:3260 --logout
+Logging out of session [sid: 1, target: iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592, portal: 172.16.0.35,3260]
+Logout of [sid: 1, target: iqn.2003-01.org.linux-iscsi.iscsi-12.x8664:sn.08ed7ab3e592, portal: 172.16.0.35,3260] successful.
+```
+
+ - Pod стартовал. Посмотрим, какие файлы есть в томе
+```
+$ kubectl exec -it iscsi-nginx -- sh -c 'cd /usr/share/nginx/html; ls -la'
+total 28
+drwxr-xr-x 3 root root  4096 Feb  4 21:36 .
+drwxr-xr-x 3 root root  4096 Jan 31 23:54 ..
+-rw-r--r-- 1 root root     7 Feb  4 21:36 index.html
+drwx------ 2 root root 16384 Feb  4 21:31 lost+found
+
+$ kubectl get pods -o wide | grep nginx
+iscsi-nginx             1/1     Running   0              100s    10.0.1.250   worker-12   <none>           <none>
+
+$ curl -s 10.0.1.250
+privet
+```
+Всё хорошо, восстановлены старые данные на момент до снимка.
