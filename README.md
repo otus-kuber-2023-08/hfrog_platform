@@ -6382,3 +6382,402 @@ $ curl -s 10.0.1.250
 privet
 ```
 Всё хорошо, восстановлены старые данные на момент до снимка.
+
+# Выполнено ДЗ №13 (debug)
+
+ - [*] Основное ДЗ
+ - [*] Задание со *
+
+## В процессе сделано:
+
+### Проверка и починка работоспособности strace в отладочном контейнере
+
+ - Поднимем кластер с помощью kubeadm, детали опускаю
+```
+$ kubectl get nodes -o wide
+NAME        STATUS   ROLES           AGE     VERSION   INTERNAL-IP   EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION      CONTAINER-RUNTIME
+master-13   Ready    control-plane   4m57s   v1.28.6   172.16.0.5    <none>        Ubuntu 20.04.6 LTS   5.4.0-170-generic   containerd://1.7.2
+worker-13   Ready    <none>          3m29s   v1.28.6   172.16.0.8    <none>        Ubuntu 20.04.6 LTS   5.4.0-170-generic   containerd://1.7.2
+```
+
+ - `kubectl-debug` заменён штатными [эфемерными контейнерами](https://kubernetes.io/docs/concepts/workloads/pods/ephemeral-containers/), далее будем использовать их.
+
+ - Экспериментировать будем на `coredns`, в котором нет даже `sh`. Для одного из подов `coredns` запустим отладочный контейнер с `strace` и выполним команду `strace`
+```
+$ kubectl get pods -A | grep coredns
+kube-system   coredns-5dd5756b68-98hhb            1/1     Running   0          36m
+kube-system   coredns-5dd5756b68-z5g5n            1/1     Running   0          36m
+
+$ kubectl debug -it coredns-5dd5756b68-98hhb -n kube-system --image=nicolaka/netshoot:latest --target=coredns
+Targeting container "coredns". If you don't see processes from this container it may be because the container runtime doesn't support this feature.
+Defaulting debug container name to debugger-mg75p.
+If you don't see a command prompt, try pressing enter.
+
+ coredns-5dd5756b68-98hhb ~ ps -ef
+PID   USER     TIME  COMMAND
+    1 root      0:02 /coredns -conf /etc/coredns/Corefile
+   34 root      0:00 zsh
+   99 root      0:00 ps -ef
+
+ coredns-5dd5756b68-98hhb ~ strace -p 1
+strace: attach: ptrace(PTRACE_SEIZE, 1): Operation not permitted
+```
+Как и ожидалось, нет доступа.
+
+Добавим профиль `general`
+```
+root@master-13:/home/ubuntu# kubectl debug -it coredns-5dd5756b68-98hhb -n kube-system --image=nicolaka/netshoot:latest --target=coredns --profile=general -- sh
+Targeting container "coredns". If you don't see processes from this container it may be because the container runtime doesn't support this feature.
+Defaulting debug container name to debugger-mskhw.
+If you don't see a command prompt, try pressing enter.
+~ # ps -ef
+PID   USER     TIME  COMMAND
+    1 root      0:06 /coredns -conf /etc/coredns/Corefile
+  137 root      0:00 sh
+  144 root      0:00 ps -ef
+~ # strace -p 1
+strace: Process 1 attached
+futex(0x3701268, FUTEX_WAIT_PRIVATE, 0, NULL
+^Cstrace: Process 1 detached
+ <detached ...>
+```
+Теперь доступ есть. Профиль `general` [добавляет SYS_PTRACE](https://github.com/kubernetes/kubernetes/pull/114280/files)
+
+Посмотрим, какие capabilities у отладочного контейнера
+```
+root@master-13:/home/ubuntu# crictl ps
+CONTAINER           IMAGE               CREATED              STATE               NAME                      ATTEMPT             POD ID              POD
+091ae8825d01e       da5f9b0ab28d0       About a minute ago   Running             debugger-69zvv            0                   1490d7dd65fa4       coredns-5dd5756b68-98hhb
+04872f0dc4483       ead0a4a53df89       3 hours ago          Running             coredns                   1                   78a530d1026ea       coredns-5dd5756b68-z5g5n
+716a66648180f       ead0a4a53df89       3 hours ago          Running             coredns                   1                   1490d7dd65fa4       coredns-5dd5756b68-98hhb
+ac21f25a6effc       835e1532c1479       3 hours ago          Running             cilium-agent              1                   0d9a155c63133       cilium-86z2r
+9c49749ba5e00       309137a97ff68       3 hours ago          Running             cilium-operator           1                   a7194ddf0cc3f       cilium-operator-67486bfbcb-dqk88
+044eff2e89c07       a0eed15eed449       3 hours ago          Running             etcd                      1                   f14959e06dd39       etcd-master-13
+da68377791944       18dbd2df3bb54       3 hours ago          Running             kube-controller-manager   1                   e16c457012b99       kube-controller-manager-master-13
+36a01aea7423d       70e88c5e3a8e4       3 hours ago          Running             kube-apiserver            1                   d0a3799b61b0b       kube-apiserver-master-13
+6576a1907d076       7597ecaaf1207       3 hours ago          Running             kube-scheduler            1                   52ce80e223ebe       kube-scheduler-master-13
+
+root@master-13:/home/ubuntu# crictl inspect 091ae8825d01e | jq .info.config.linux.security_context.capabilities
+{
+  "add_capabilities": [
+    "SYS_PTRACE"
+  ]
+}
+```
+Всё сходится.
+
+### Настроим и проверим сетевую политику
+
+ - Добавим ещё один рабочий узел в кластер и установим calico по [инструкции](https://docs.tigera.io/calico/latest/getting-started/kubernetes/helm). К сожалению, в режиме eBPF логгирование сетевых политик в calico не работает, поэтому ставим с kube-proxy.
+```
+root@master-13:/home/ubuntu# helm repo add projectcalico https://docs.tigera.io/calico/charts
+"projectcalico" has been added to your repositories
+
+root@master-13:/home/ubuntu# cat calico-values.yaml
+# v3.27.0
+installation:
+  enabled: true
+  cni:
+    type: Calico
+  calicoNetwork:
+    bgp: Disabled
+    ipPools:
+    - cidr: 10.244.0.0/16
+      blockSize: 24
+      encapsulation: VXLAN
+      nodeSelector: all()
+
+root@master-13:/home/ubuntu/calico# helm upgrade --install calico projectcalico/tigera-operator --values calico-values.yaml --version v3.27.0 --namespace tigera-operator --create-namespace
+Release "calico" does not exist. Installing it now.
+NAME: calico
+LAST DEPLOYED: Mon Feb 12 19:17:15 2024
+NAMESPACE: tigera-operator
+STATUS: deployed
+REVISION: 1
+TEST SUITE: None
+```
+
+ - [netperf-operator](https://github.com/piontec/netperf-operator) устарел, не создаются CRDs, попробуем найти что-то поновее. [k8s-netperf](https://github.com/cloud-bulldozer/k8s-netperf) выглядит многообещающе, попробуем его. Установка:
+```
+root@master-13:/home/ubuntu/k8s-netperf# git clone http://github.com/cloud-bulldozer/k8s-netperf
+...
+root@master-13:/home/ubuntu/k8s-netperf# apt-get install -y make golang
+...
+root@master-13:/home/ubuntu/k8s-netperf# cd k8s-netperf
+также установим свежий golang
+root@master-13:/home/ubuntu/k8s-netperf# make build
+...
+
+$ kubectl create ns netperf
+$ kubectl create sa -n netperf netperf
+```
+
+ - Запуск:
+```
+root@master-13:/home/ubuntu/k8s-netperf# cat netperf.yml
+---
+tests:
+  - TCPStream:
+    parallelism: 1
+    profile: "TCP_STREAM"
+    duration: 10
+    samples: 3
+    messagesize: 1024
+
+root@master-13:/home/ubuntu/k8s-netperf# ./bin/amd64/k8s-netperf
+INFO[2024-02-12 19:21:09] 📒 Reading netperf.yml file.
+INFO[2024-02-12 19:21:09] 📒 Reading netperf.yml file - using ConfigV2 Method.
+INFO[2024-02-12 19:21:09] Cleaning resources created by k8s-netperf
+W0212 19:21:09.514588    3119 client_config.go:618] Neither --kubeconfig nor --master was specified.  Using the inClusterConfig.  This might not work.
+W0212 19:21:09.514667    3119 client_config.go:623] error creating inClusterConfig, falling back to default config: unable to load in-cluster configuration, KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT must be defined
+ERRO[2024-02-12 19:21:09] invalid configuration: no configuration has been provided, try setting KUBERNETES_MASTER environment variable
+WARN[2024-02-12 19:21:09] 😥 Prometheus is not available
+WARN[2024-02-12 19:21:09] ⚠️  No zone label
+WARN[2024-02-12 19:21:09] ⚠️  Single node per zone and/or no zone labels
+INFO[2024-02-12 19:21:09] 🚀 Creating service for iperf-service in namespace netperf
+INFO[2024-02-12 19:21:09] 🚀 Creating service for uperf-service in namespace netperf
+INFO[2024-02-12 19:21:09] 🚀 Creating service for netperf-service in namespace netperf
+INFO[2024-02-12 19:21:09] 🚀 Starting Deployment for: client-across in namespace: netperf
+INFO[2024-02-12 19:21:09] ⏰ Checking for client-across Pods to become ready...
+INFO[2024-02-12 19:21:14] 🚀 Starting Deployment for: server in namespace: netperf
+INFO[2024-02-12 19:21:14] ⏰ Checking for server Pods to become ready...
+INFO[2024-02-12 19:21:19] 🗒️  Running netperf TCP_STREAM (service false) for 10s
+ERRO[2024-02-12 19:21:20] P99_Latency was empty.
+WARN[2024-02-12 19:21:20] Rerunning test.
+INFO[2024-02-12 19:21:20] 🗒️  Running netperf TCP_STREAM (service false) for 10s
+INFO[2024-02-12 19:21:33] 🗒️  Running netperf TCP_STREAM (service false) for 10s
+INFO[2024-02-12 19:21:45] 🗒️  Running netperf TCP_STREAM (service false) for 10s
+WARN[2024-02-12 19:21:57] Not able to collect OpenShift specific node info
++-------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+--------------------+--------------------------------+
+|    RESULT TYPE    | DRIVER  |  SCENARIO  | PARALLELISM | HOST NETWORK | SERVICE | MESSAGE SIZE | SAME NODE | DURATION | SAMPLES |     AVG VALUE      |    95% CONFIDENCE INTERVAL     |
++-------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+--------------------+--------------------------------+
+| 📊 Stream Results | netperf | TCP_STREAM | 1           | false        | false   | 1024         | false     | 10       | 3       | 1495.093333 (Mb/s) | 1347.991280-1642.195387 (Mb/s) |
++-------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+--------------------+--------------------------------+
++---------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+-------------+
+|        TYPE         | DRIVER  |  SCENARIO  | PARALLELISM | HOST NETWORK | SERVICE | MESSAGE SIZE | SAME NODE | DURATION | SAMPLES |  AVG VALUE  |
++---------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+-------------+
+| TCP Retransmissions | netperf | TCP_STREAM | 1           | false        | false   | 1024         | false     | 10       | 3       | 1830.666667 |
++---------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+-------------+
+INFO[2024-02-12 19:21:57] Cleaning resources created by k8s-netperf
+INFO[2024-02-12 19:21:57] ⏰ Waiting for client-across Deployment to deleted...
+INFO[2024-02-12 19:22:28] ⏰ Waiting for server Deployment to deleted...
+```
+То, что нужно.
+
+ - Немного подкорректируем сетевую политику и применим её. Политика должна пропускать трафик к серверу `netperf` от клиента и обратно, весь остальной трафик запрещён.
+  Также будем логгировать все соединения, разрешённые или нет - неважно. Для того, чтобы логгирование работало, поставим `Log` перед `Allow`.
+```
+root@master-13:/home/ubuntu# cat calico/networkpolicy.yaml
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: netperf-calico-policy
+  namespace: netperf
+spec:
+  selector: role == 'server'
+  ingress:
+  - action: Log
+  - action: Allow
+    protocol: TCP
+    source:
+      selector: role == 'client-across'
+  egress:
+  - action: Log
+  - action: Allow
+    protocol: TCP
+    destination:
+      selector: role == 'client-across'
+
+root@master-13:/home/ubuntu/k8s-netperf# calicoctl apply -f ../calico/networkpolicy.yaml
+Successfully applied 1 'NetworkPolicy' resource(s)
+```
+
+ - Снова запускаем netperf, тоже успешно
+```
+root@master-13:/home/ubuntu/k8s-netperf# ./bin/amd64/k8s-netperf
+INFO[2024-02-12 19:59:05] 📒 Reading netperf.yml file.
+INFO[2024-02-12 19:59:05] 📒 Reading netperf.yml file - using ConfigV2 Method.
+INFO[2024-02-12 19:59:05] Cleaning resources created by k8s-netperf
+W0212 19:59:05.989785    8089 client_config.go:618] Neither --kubeconfig nor --master was specified.  Using the inClusterConfig.  This might not work.
+W0212 19:59:05.989817    8089 client_config.go:623] error creating inClusterConfig, falling back to default config: unable to load in-cluster configuration, KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT must be defined
+ERRO[2024-02-12 19:59:05] invalid configuration: no configuration has been provided, try setting KUBERNETES_MASTER environment variable
+WARN[2024-02-12 19:59:05] 😥 Prometheus is not available
+WARN[2024-02-12 19:59:05] ⚠️  No zone label
+WARN[2024-02-12 19:59:05] ⚠️  Single node per zone and/or no zone labels
+INFO[2024-02-12 19:59:05] 🚀 Creating service for iperf-service in namespace netperf
+INFO[2024-02-12 19:59:06] 🚀 Creating service for uperf-service in namespace netperf
+INFO[2024-02-12 19:59:06] 🚀 Creating service for netperf-service in namespace netperf
+INFO[2024-02-12 19:59:06] 🚀 Starting Deployment for: client-across in namespace: netperf
+INFO[2024-02-12 19:59:06] ⏰ Checking for client-across Pods to become ready...
+INFO[2024-02-12 19:59:07] 🚀 Starting Deployment for: server in namespace: netperf
+INFO[2024-02-12 19:59:07] ⏰ Checking for server Pods to become ready...
+INFO[2024-02-12 19:59:11] 🗒️  Running netperf TCP_STREAM (service false) for 10s
+INFO[2024-02-12 19:59:23] 🗒️  Running netperf TCP_STREAM (service false) for 10s
+INFO[2024-02-12 19:59:35] 🗒️  Running netperf TCP_STREAM (service false) for 10s
+WARN[2024-02-12 19:59:47] Not able to collect OpenShift specific node info
++-------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+--------------------+-------------------------------+
+|    RESULT TYPE    | DRIVER  |  SCENARIO  | PARALLELISM | HOST NETWORK | SERVICE | MESSAGE SIZE | SAME NODE | DURATION | SAMPLES |     AVG VALUE      |    95% CONFIDENCE INTERVAL    |
++-------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+--------------------+-------------------------------+
+| 📊 Stream Results | netperf | TCP_STREAM | 1           | false        | false   | 1024         | false     | 10       | 3       | 1556.886667 (Mb/s) | 919.230283-2194.543050 (Mb/s) |
++-------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+--------------------+-------------------------------+
++---------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+-------------+
+|        TYPE         | DRIVER  |  SCENARIO  | PARALLELISM | HOST NETWORK | SERVICE | MESSAGE SIZE | SAME NODE | DURATION | SAMPLES |  AVG VALUE  |
++---------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+-------------+
+| TCP Retransmissions | netperf | TCP_STREAM | 1           | false        | false   | 1024         | false     | 10       | 3       | 1822.000000 |
++---------------------+---------+------------+-------------+--------------+---------+--------------+-----------+----------+---------+-------------+
+INFO[2024-02-12 19:59:47] Cleaning resources created by k8s-netperf
+INFO[2024-02-12 19:59:47] ⏰ Waiting for client-across Deployment to deleted...
+INFO[2024-02-12 20:00:18] ⏰ Waiting for server Deployment to deleted...
+```
+
+ - В логах виртуалки, на которой работал netperf server, есть записи `calico-packet`:
+```
+root@worker-13:/home/ubuntu# grep calico-packet /var/log/syslog | grep 19:59
+Feb 12 19:59:11 worker-13 kernel: [ 3361.343222] calico-packet: IN=vxlan.calico OUT=cali5bb0287a2fb MAC=66:96:0d:81:2d:a0:66:73:5d:68:ce:68:08:00 SRC=10.244.44.9 DST=10.244.253.10 LEN=60 TOS=0x00 PREC=0x00 TTL=62 ID=2471 DF PROTO=TCP SPT=41237 DPT=12865 WINDOW=64860 RES=0x00 SYN URGP=0
+Feb 12 19:59:13 worker-13 kernel: [ 3363.348922] calico-packet: IN=vxlan.calico OUT=cali5bb0287a2fb MAC=66:96:0d:81:2d:a0:66:73:5d:68:ce:68:08:00 SRC=10.244.44.9 DST=10.244.253.10 LEN=60 TOS=0x00 PREC=0x00 TTL=62 ID=54964 DF PROTO=TCP SPT=43414 DPT=35535 WINDOW=64860 RES=0x00 SYN URGP=0
+Feb 12 19:59:23 worker-13 kernel: [ 3373.440484] calico-packet: IN=vxlan.calico OUT=cali5bb0287a2fb MAC=66:96:0d:81:2d:a0:66:73:5d:68:ce:68:08:00 SRC=10.244.44.9 DST=10.244.253.10 LEN=60 TOS=0x00 PREC=0x00 TTL=62 ID=42000 DF PROTO=TCP SPT=59859 DPT=12865 WINDOW=64860 RES=0x00 SYN URGP=0
+Feb 12 19:59:25 worker-13 kernel: [ 3375.446432] calico-packet: IN=vxlan.calico OUT=cali5bb0287a2fb MAC=66:96:0d:81:2d:a0:66:73:5d:68:ce:68:08:00 SRC=10.244.44.9 DST=10.244.253.10 LEN=60 TOS=0x00 PREC=0x00 TTL=62 ID=64312 DF PROTO=TCP SPT=57962 DPT=45313 WINDOW=64860 RES=0x00 SYN URGP=0
+Feb 12 19:59:35 worker-13 kernel: [ 3385.559228] calico-packet: IN=vxlan.calico OUT=cali5bb0287a2fb MAC=66:96:0d:81:2d:a0:66:73:5d:68:ce:68:08:00 SRC=10.244.44.9 DST=10.244.253.10 LEN=60 TOS=0x00 PREC=0x00 TTL=62 ID=3715 DF PROTO=TCP SPT=39027 DPT=12865 WINDOW=64860 RES=0x00 SYN URGP=0
+Feb 12 19:59:37 worker-13 kernel: [ 3387.564499] calico-packet: IN=vxlan.calico OUT=cali5bb0287a2fb MAC=66:96:0d:81:2d:a0:66:73:5d:68:ce:68:08:00 SRC=10.244.44.9 DST=10.244.253.10 LEN=60 TOS=0x00 PREC=0x00 TTL=62 ID=17608 DF PROTO=TCP SPT=52838 DPT=34381 WINDOW=64860 RES=0x00 SYN URGP=0
+```
+
+ - Чтобы увидеть счётчики в iptables или поэкспериментировать с трафиком надо прервать тест, т.к. по завершению теста сервер и клиент удаляются вместе с правилами.
+
+```
+root@master-13:/home/ubuntu/k8s-netperf# ./bin/amd64/k8s-netperf
+INFO[2024-02-12 20:06:11] 📒 Reading netperf.yml file.
+INFO[2024-02-12 20:06:11] 📒 Reading netperf.yml file - using ConfigV2 Method.
+INFO[2024-02-12 20:06:11] Cleaning resources created by k8s-netperf
+W0212 20:06:11.703357    9015 client_config.go:618] Neither --kubeconfig nor --master was specified.  Using the inClusterConfig.  This might not work.
+W0212 20:06:11.703382    9015 client_config.go:623] error creating inClusterConfig, falling back to default config: unable to load in-cluster configuration, KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT must be defined
+ERRO[2024-02-12 20:06:11] invalid configuration: no configuration has been provided, try setting KUBERNETES_MASTER environment variable
+WARN[2024-02-12 20:06:11] 😥 Prometheus is not available
+WARN[2024-02-12 20:06:11] ⚠️  No zone label
+WARN[2024-02-12 20:06:11] ⚠️  Single node per zone and/or no zone labels
+INFO[2024-02-12 20:06:11] 🚀 Creating service for iperf-service in namespace netperf
+INFO[2024-02-12 20:06:11] 🚀 Creating service for uperf-service in namespace netperf
+INFO[2024-02-12 20:06:11] 🚀 Creating service for netperf-service in namespace netperf
+INFO[2024-02-12 20:06:11] 🚀 Starting Deployment for: client-across in namespace: netperf
+INFO[2024-02-12 20:06:11] ⏰ Checking for client-across Pods to become ready...
+INFO[2024-02-12 20:06:13] 🚀 Starting Deployment for: server in namespace: netperf
+INFO[2024-02-12 20:06:13] ⏰ Checking for server Pods to become ready...
+INFO[2024-02-12 20:06:16] 🗒️  Running netperf TCP_STREAM (service false) for 10s
+^C
+```
+
+ - Посмотрим на счётчики `iptables`
+```
+root@worker-13:/home/ubuntu# iptables -vnL | grep DROP | awk '$1 != 0'
+
+root@worker-13:/home/ubuntu# iptables -vnL | grep LOG
+    2   120 LOG        all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* cali:XZYah5ZUgDgEkf6U */ /* Policy netperf/default.netperf-calico-policy ingress */ LOG flags 0 level 5 prefix "calico-packet: "
+    0     0 LOG        all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* cali:GNq6GW2jpLyCRBIN */ /* Policy netperf/default.netperf-calico-policy egress */ LOG flags 0 level 5 prefix "calico-packet: "
+```
+Счётчики отброшенных пакетов пустые, т.к. нелегитимного трафика нет
+
+ - Попробуем обратиться к серверу из тестового пода
+```
+root@master-13:/home/ubuntu/k8s-netperf# kubectl get pods -n netperf -o wide
+NAME                             READY   STATUS    RESTARTS   AGE     IP              NODE          NOMINATED NODE   READINESS GATES
+client-across-6c45d67446-zntnc   1/1     Running   0          3m59s   10.244.44.11    worker-13-2   <none>           <none>
+server-7bf45b8959-s8lkk          3/3     Running   0          3m57s   10.244.253.12   worker-13     <none>           <none>
+
+root@master-13:/home/ubuntu/k8s-netperf# kubectl run -it --image=busybox -- sh
+If you don't see a command prompt, try pressing enter.
+/ #
+/ # ping 10.244.253.12
+PING 10.244.253.12 (10.244.253.12): 56 data bytes
+^C
+--- 10.244.253.12 ping statistics ---
+3 packets transmitted, 0 packets received, 100% packet loss
+```
+
+ - И снова посмотрим на счётчики, а также на логи
+```
+root@worker-13:/home/ubuntu# iptables -vnL | grep DROP | awk '$1 != 0'
+    3   252 DROP       all  --  *      *       0.0.0.0/0            0.0.0.0/0            /* cali:4IUomD0qGNQlhCFi */ /* Drop if no policies passed packet */ mark match 0x0/0x20000
+
+root@worker-13:/home/ubuntu# grep calico-packet /var/log/syslog | tail
+...
+Feb 12 20:10:58 worker-13 kernel: [ 4068.809560] calico-packet: IN=vxlan.calico OUT=cali6514aa0ad99 MAC=66:96:0d:81:2d:a0:66:73:5d:68:ce:68:08:00 SRC=10.244.44.12 DST=10.244.253.12 LEN=84 TOS=0x00 PREC=0x00 TTL=62 ID=50846 DF PROTO=ICMP TYPE=8 CODE=0 ID=7 SEQ=0
+Feb 12 20:10:59 worker-13 kernel: [ 4069.809143] calico-packet: IN=vxlan.calico OUT=cali6514aa0ad99 MAC=66:96:0d:81:2d:a0:66:73:5d:68:ce:68:08:00 SRC=10.244.44.12 DST=10.244.253.12 LEN=84 TOS=0x00 PREC=0x00 TTL=62 ID=50983 DF PROTO=ICMP TYPE=8 CODE=0 ID=7 SEQ=1
+Feb 12 20:11:00 worker-13 kernel: [ 4070.809396] calico-packet: IN=vxlan.calico OUT=cali6514aa0ad99 MAC=66:96:0d:81:2d:a0:66:73:5d:68:ce:68:08:00 SRC=10.244.44.12 DST=10.244.253.12 LEN=84 TOS=0x00 PREC=0x00 TTL=62 ID=51074 DF PROTO=ICMP TYPE=8 CODE=0 ID=7 SEQ=2
+```
+Политика работает, видим три отброшенных пакета, протокол ICMP.
+
+### Настроим логгирование пакетов в events
+
+ - Для этого установим [kube-iptables-tailer](https://github.com/honestica/kube-iptables-tailer.git) через манифест daemonset, окончательная версия файла прилагается
+
+ - После установки попингуем netperf сервер и посмотрим логи `kube-iptables-tailer` на соответствующем узле
+```
+$ kubectl get pods -n netperf -o wide
+NAME                             READY   STATUS    RESTARTS   AGE     IP              NODE          NOMINATED NODE   READINESS GATES
+client-across-6c45d67446-52hd9   1/1     Running   0          2m12s   10.244.253.18   worker-13     <none>           <none>
+server-7bf45b8959-p9r86          3/3     Running   0          2m10s   10.244.44.18    worker-13-2   <none>           <none>
+
+$ kubectl exec -it sh -- sh
+/ # ping 10.244.44.18
+PING 10.244.44.18 (10.244.44.18): 56 data bytes
+^C
+--- 10.244.44.18 ping statistics ---
+5 packets transmitted, 0 packets received, 100% packet loss
+
+$ kubectl logs kube-iptables-tailer-2nd9k -n kube-system | less
+...
+E0215 17:15:25.309190       1 event.go:260] Server rejected event '&v1.Event{TypeMeta:v1.TypeMeta{Kind:"", APIVersion:""}, ObjectMeta:v1.ObjectMeta{Name:"server-7bf45b8959-p9r86.17b418b5391bdc28", GenerateName:"", Namespace:"netperf", SelfLink:"", UID:"", ResourceVersion:"", Generation:0, CreationTimestamp:v1.Time{Time:time.Time{wall:0x0, ext:0, loc:(*time.Location)(nil)}}, DeletionTimestamp:(*v1.Time)(nil), DeletionGracePeriodSeconds:(*int64)(nil), Labels:map[string]string(nil), Annotations:map[string]string(nil), OwnerReferences:[]v1.OwnerReference(nil), Finalizers:[]string(nil), ClusterName:"", ManagedFields:[]v1.ManagedFieldsEntry(nil)}, InvolvedObject:v1.ObjectReference{Kind:"Pod", Namespace:"netperf", Name:"server-7bf45b8959-p9r86", UID:"ad143cd5-dec0-4144-93b9-8560e7515e1d", APIVersion:"v1", ResourceVersion:"95025", FieldPath:""}, Reason:"PacketDrop", Message:"Packet dropped when receiving traffic from netperf (10.244.253.18) on port 12865/TCP", Source:v1.EventSource{Component:"kube-iptables-tailer", Host:""}, FirstTimestamp:v1.Time{Time:time.Time{wall:0xc16baf8b52455a28, ext:153523963883, loc:(*time.Location)(0x20e68a0)}}, LastTimestamp:v1.Time{Time:time.Time{wall:0xc16baf8b52455a28, ext:153523963883, loc:(*time.Location)(0x20e68a0)}}, Count:1, Type:"Warning", EventTime:v1.MicroTime{Time:time.Time{wall:0x0, ext:0, loc:(*time.Location)(nil)}}, Series:(*v1.EventSeries)(nil), Action:"", Related:(*v1.ObjectReference)(nil), ReportingController:"", ReportingInstance:""}': 'events is forbidden: User "system:serviceaccount:kube-system:kube-iptables-tailer" cannot create resource "events" in API group "" in the namespace "netperf"' (will not retry!)
+...
+```
+Не хватает прав. Подкорректируем роль и попробуем снова
+
+```
+{"level":"error","timestamp":"2024-02-15T17:25:05.556Z","caller":"drop/parser.go:83","msg":"Cannot parse the log line","log":"2024-02-15T17:25:05.147707+00:00 worker-13-2 calico-packet: IN=cali9acbc0a0a03 OUT=cali0907d31e393 MAC=ee:ee:ee:ee:ee:ee:9e:cd:9f:1e:23:08:08:00 SRC=10.244.44.16 DST=10.244.44.18 LEN=84 TOS=0x00 PREC=0x00 TTL=63 ID=62678 DF PROTO=ICMP TYPE=8 CODE=0 ID=21 SEQ=0 \n","error":"Missing field=SPT","stacktrace":"github.com/box/kube-iptables-tailer/drop.RunParsing\n\t/root/go/src/github.com/box/kube-iptables-tailer/drop/parser.go:83\nmain.startParsing\n\t/root/go/src/github.com/box/kube-iptables-tailer/main.go:95"}
+```
+Теперь не может разобрать строку, это из-за ICMP
+
+ - Попробуем TCP
+```
+$ kubectl exec -it sh -- sh
+/ # telnet 10.244.44.18 222
+^C
+
+$ kubectl logs kube-iptables-tailer-2nd9k -n kube-system | less
+{"level":"info","timestamp":"2024-02-15T17:27:50.056Z","caller":"drop/parser.go:200","msg":"Parsed new packet","raw":"2024-02-15T17:27:49.651699+00:00 worker-13-2 calico-packet: IN=cali9acbc0a0a03 OUT=cali0907d31e393 MAC=ee:ee:ee:ee:ee:ee:9e:cd:9f:1e:23:08:08:00 SRC=10.244.44.16 DST=10.244.44.18 LEN=60 TOS=0x00 PREC=0x00 TTL=63 ID=22764 DF PROTO=TCP SPT=43132 DPT=222 WINDOW=64860 RES=0x00 SYN URGP=0 \n","packet_drop":{"pkt_log_time":"2024-02-15T17:27:49.651Z","pkt_src_ip":"10.244.44.16","pkt_src_port":"43132","pkt_dst_ip":"10.244.44.18","pkt_dst_port":"222","pkt_proto":"TCP","pkt_ttl":"63","pkt_mac_addr":"ee:ee:ee:ee:ee:ee:9e:cd:9f:1e:23:08:08:00","pkt_interface_recv":"cali9acbc0a0a03","pkt_interface_sent":"cali0907d31e393"}}
+
+$ kubectl describe pod server-7bf45b8959-p9r86 -n netperf | tail -5
+  Normal   Pulling     16m    kubelet               Pulling image "quay.io/cloud-bulldozer/netperf:latest"
+  Normal   Pulled      16m    kubelet               Successfully pulled image "quay.io/cloud-bulldozer/netperf:latest" in 598ms (598ms including waiting)
+  Normal   Created     16m    kubelet               Created container server-2
+  Normal   Started     16m    kubelet               Started container server-2
+  Warning  PacketDrop  4m30s  kube-iptables-tailer  Packet dropped when receiving traffic from default (10.244.44.16) on port 222/TCP
+
+$ kubectl get pods -A -o wide | grep sh
+default            sh                                         1/1     Running   1 (67m ago)   2d21h   10.244.44.16    worker-13-2   <none>           <none>
+Это pod, откуда я подключался к netperf серверу
+
+$ kubectl get events -A | head -5
+NAMESPACE     LAST SEEN   TYPE      REASON              OBJECT                                MESSAGE
+default       5m34s       Warning   PacketDrop          pod/sh                                Packet dropped when sending traffic to netperf (10.244.44.18) on port 222/TCP
+kube-system   9m8s        Normal    Scheduled           pod/kube-iptables-tailer-2nd9k        Successfully assigned kube-system/kube-iptables-tailer-2nd9k to worker-13-2
+kube-system   9m7s        Normal    Pulled              pod/kube-iptables-tailer-2nd9k        Container image "honestica/kube-iptables-tailer:master-100" already present on machine
+kube-system   9m7s        Normal    Created             pod/kube-iptables-tailer-2nd9k        Created container kube-iptables-tailer
+```
+На этот раз всё хорошо, лог успешно разобран, появились записи в describe пода и в events
+
+ - Добавим в сообщения название пода, выставив в манифесте переменную среды `POD_IDENTIFIER` со значением `name_with_namespace` и снова проверим, делая telnet на порт 333. Перед этим я пробовал значение переменной `name`, соответствующие строчки также есть в логах
+```
+$ kubectl describe pod server-7bf45b8959-p9r86 -n netperf | tail -5
+  Normal   Created     30m    kubelet               Created container server-2
+  Normal   Started     30m    kubelet               Started container server-2
+  Warning  PacketDrop  18m    kube-iptables-tailer  Packet dropped when receiving traffic from default (10.244.44.16) on port 222/TCP
+  Warning  PacketDrop  6m21s  kube-iptables-tailer  Packet dropped when receiving traffic from sh (10.244.44.16) on port 333/TCP
+  Warning  PacketDrop  17s    kube-iptables-tailer  Packet dropped when receiving traffic from default/sh (10.244.44.16) on port 333/TCP
+
+$ kubectl get events -A | head -5
+NAMESPACE     LAST SEEN   TYPE      REASON              OBJECT                                MESSAGE
+default       19m         Warning   PacketDrop          pod/sh                                Packet dropped when sending traffic to netperf (10.244.44.18) on port 222/TCP
+default       7m32s       Warning   PacketDrop          pod/sh                                Packet dropped when sending traffic to server-7bf45b8959-p9r86 (10.244.44.18) on port 333/TCP
+default       88s         Warning   PacketDrop          pod/sh                                Packet dropped when sending traffic to netperf/server-7bf45b8959-p9r86 (10.244.44.18) on port 333/TCP
+kube-system   23m         Normal    Scheduled           pod/kube-iptables-tailer-2nd9k        Successfully assigned kube-system/kube-iptables-tailer-2nd9k to worker-13-2
+```
+И там и там видим, что запрещено соединение из пода `sh` в namespace `default`, IP адрес его `10.244.44.16`, соединение по TCP на порт 333.
