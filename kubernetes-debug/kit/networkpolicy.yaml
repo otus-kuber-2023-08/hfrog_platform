@@ -1,0 +1,19 @@
+apiVersion: projectcalico.org/v3
+kind: NetworkPolicy
+metadata:
+  name: netperf-calico-policy
+  namespace: netperf
+spec:
+  selector: role == 'server'
+  ingress:
+  - action: Log
+  - action: Allow
+    protocol: TCP
+    source:
+      selector: role == 'client-across'
+  egress:
+  - action: Log
+  - action: Allow
+    protocol: TCP
+    destination:
+      selector: role == 'client-across'

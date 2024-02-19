@@ -1,0 +1,13 @@
+# v3.27.0
+installation:
+  enabled: true
+  cni:
+    type: Calico
+  calicoNetwork:
+    linuxDataplane: BPF
+    bgp: Disabled
+    ipPools:
+    - cidr: 10.244.0.0/16
+      blockSize: 24
+      encapsulation: VXLAN
+      nodeSelector: all()
